@@ -3,12 +3,15 @@
 Persistent
 
 ; ── Config ──────────────────────────────────────────────
-global Version      := "1.0.0"
+global Version      := "1.1.0"
 global SyncExe      := A_ScriptDir "\syncthing.exe"
 global WebUI        := "http://localhost:8384"
 global DblClickOpen := true
 global RunOnStartup := false
+global ApiKey       := ""
 global SettingsFile := A_ScriptDir "\SyncthingTray.ini"
+; Track whether we intentionally stopped syncthing (vs unexpected crash)
+global g_intentionalStop := false
 
 ; ── Load Settings ───────────────────────────────────────
 if FileExist(SettingsFile) {
@@ -18,6 +21,9 @@ if FileExist(SettingsFile) {
 
         val2 := IniRead(SettingsFile, "Settings", "RunOnStartup", "0")
         RunOnStartup := (val2 = "1")
+
+        val3 := IniRead(SettingsFile, "Settings", "ApiKey", "")
+        ApiKey := val3
     }
 }
 
@@ -36,10 +42,17 @@ UpdateTrayIcon()
 SetTimer(UpdateTrayIcon, 5000)
 
 UpdateTrayIcon() {
+    global g_intentionalStop
     static lastState := -1
     running := ProcessExist("syncthing.exe")
     ; Rebuild menu when state changes so Start/Stop label stays correct
     if (running != lastState) {
+        ; P4-01: Notify user if syncthing exited unexpectedly
+        if (lastState != -1 && !running && !g_intentionalStop) {
+            TrayTip("Syncthing has stopped unexpectedly!", "SyncthingTray", 3)
+            SoundBeep(300, 300)
+        }
+        g_intentionalStop := false
         lastState := running
         BuildMenu()
     }
@@ -119,7 +132,7 @@ MenuOpenUI(*) {
 }
 
 MenuOpenSettings(*) {
-    global DblClickOpen, RunOnStartup, Version, WebUI
+    global DblClickOpen, RunOnStartup, ApiKey, Version, WebUI
 
     ; Only allow one instance of the settings window
     if WinExist("SyncthingTray Settings") {
@@ -128,7 +141,7 @@ MenuOpenSettings(*) {
     }
 
     sw := 320
-    sh := 210
+    sh := 250
 
     sg := Gui("+AlwaysOnTop -Resize +ToolWindow", "SyncthingTray Settings")
     sg.BackColor := "1E1E2E"
@@ -147,22 +160,27 @@ MenuOpenSettings(*) {
     cbStart := sg.Add("Checkbox", "x16 y74 w280 cCDD6F3", "Run on startup")
     cbStart.Value := RunOnStartup ? 1 : 0
 
+    ; API Key for graceful shutdown
+    sg.Add("Text", "x16 y100 w60 cA0A0C0", "API Key:")
+    edApiKey := sg.Add("Edit", "x80 y98 w220 h22 cCDD6F3 Background2A2A3E", ApiKey)
+    edApiKey.SetFont("s8", "Consolas")
+
     ; Divider
-    sg.Add("Text", "x0 y104 w" sw " h1 Background404050")
+    sg.Add("Text", "x0 y130 w" sw " h1 Background404050")
 
     ; GitHub button
     sg.SetFont("s9 cCDD6F3 norm", "Segoe UI")
-    sg.Add("Text", "x16 y116 w60 cA0A0C0", "GitHub:")
-    btnGH := sg.Add("Button", "x80 y112 w200 h22", "github.com/itsnateai/SyncthingTray")
+    sg.Add("Text", "x16 y142 w60 cA0A0C0", "GitHub:")
+    btnGH := sg.Add("Button", "x80 y138 w200 h22", "github.com/itsnateai/SyncthingTray")
     btnGH.SetFont("s8", "Segoe UI")
     btnGH.OnEvent("Click", (*) => Run("https://github.com/itsnateai/SyncthingTray"))
 
     ; Divider
-    sg.Add("Text", "x0 y146 w" sw " h1 Background404050")
+    sg.Add("Text", "x0 y172 w" sw " h1 Background404050")
 
     ; Save / Cancel
-    btnSave   := sg.Add("Button", "x16 y158 w130 h30 Default", "Save")
-    btnCancel := sg.Add("Button", "x158 y158 w130 h30", "Cancel")
+    btnSave   := sg.Add("Button", "x16 y184 w130 h30 Default", "Save")
+    btnCancel := sg.Add("Button", "x158 y184 w130 h30", "Cancel")
 
     btnSave.OnEvent("Click", SaveSettings)
     btnCancel.OnEvent("Click", (*) => sg.Destroy())
@@ -172,11 +190,13 @@ MenuOpenSettings(*) {
     sg.Show("w" sw " h" sh " Center")
 
     SaveSettings(*) {
-        global DblClickOpen, RunOnStartup
+        global DblClickOpen, RunOnStartup, ApiKey
         DblClickOpen  := cbDbl.Value = 1
         RunOnStartup  := cbStart.Value = 1
+        ApiKey        := edApiKey.Value
         IniWrite(DblClickOpen  ? "1" : "0", SettingsFile, "Settings", "DblClickOpen")
         IniWrite(RunOnStartup  ? "1" : "0", SettingsFile, "Settings", "RunOnStartup")
+        IniWrite(ApiKey, SettingsFile, "Settings", "ApiKey")
         try {
             ApplyStartup(RunOnStartup)
         } catch as e {
@@ -200,13 +220,10 @@ MenuStart(*) {
 }
 
 MenuStop(*) {
+    global g_intentionalStop
     if ProcessExist("syncthing.exe") {
-        ProcessClose("syncthing.exe")
-        loop 30 {
-            if !ProcessExist("syncthing.exe")
-                break
-            Sleep(100)
-        }
+        g_intentionalStop := true
+        StopSyncthing()
         UpdateTrayIcon()
         BuildMenu()
         TrayTip("Syncthing stopped", "SyncthingTray")
@@ -215,7 +232,24 @@ MenuStop(*) {
     }
 }
 
-MenuRestart(*) {
+; P1-02: Graceful shutdown via REST API, falling back to ProcessClose
+StopSyncthing() {
+    global ApiKey, WebUI
+    if (ApiKey != "") {
+        try {
+            whr := ComObject("WinHttp.WinHttpRequest.5.1")
+            whr.Open("POST", WebUI "/rest/system/shutdown", false)
+            whr.SetRequestHeader("X-API-Key", ApiKey)
+            whr.Send()
+            ; Wait for syncthing to exit gracefully
+            loop 50 {
+                if !ProcessExist("syncthing.exe")
+                    return
+                Sleep(100)
+            }
+        }
+    }
+    ; Fallback: force close if REST API unavailable or timed out
     if ProcessExist("syncthing.exe") {
         ProcessClose("syncthing.exe")
         loop 30 {
@@ -224,6 +258,14 @@ MenuRestart(*) {
             Sleep(100)
         }
     }
+}
+
+MenuRestart(*) {
+    global g_intentionalStop
+    if ProcessExist("syncthing.exe") {
+        g_intentionalStop := true
+        StopSyncthing()
+    }
     try Run(SyncExe " --no-browser", A_ScriptDir, "Hide")
     UpdateTrayIcon()
     BuildMenu()
@@ -231,7 +273,8 @@ MenuRestart(*) {
 }
 
 MenuExit(*) {
-    if ProcessExist("syncthing.exe")
-        ProcessClose("syncthing.exe")
+    global g_intentionalStop
+    g_intentionalStop := true
+    StopSyncthing()
     ExitApp()
 }
