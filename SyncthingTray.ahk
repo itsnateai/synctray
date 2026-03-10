@@ -33,9 +33,16 @@ if !ProcessExist("syncthing.exe") {
 ; ── Tray Icon ───────────────────────────────────────────
 A_IconTip := "SyncthingTray v" Version
 UpdateTrayIcon()
+SetTimer(UpdateTrayIcon, 5000)
 
 UpdateTrayIcon() {
+    static lastState := -1
     running := ProcessExist("syncthing.exe")
+    ; Rebuild menu when state changes so Start/Stop label stays correct
+    if (running != lastState) {
+        lastState := running
+        BuildMenu()
+    }
     if running {
         ico := A_ScriptDir "\sync.ico"
         if FileExist(ico)
@@ -52,8 +59,6 @@ UpdateTrayIcon() {
 }
 
 ; ── Build Tray Menu ─────────────────────────────────────
-BuildMenu()
-
 BuildMenu() {
     global DblClickOpen, RunOnStartup, WebUI, Version
 
@@ -181,27 +186,6 @@ MenuOpenSettings(*) {
         sg.Destroy()
         TrayTip("Settings saved", "SyncthingTray")
     }
-}
-
-MenuToggleDblClick(*) {
-    global DblClickOpen
-    DblClickOpen := !DblClickOpen
-    IniWrite(DblClickOpen ? "1" : "0", SettingsFile, "Settings", "DblClickOpen")
-    BuildMenu()
-}
-
-MenuToggleStartup(*) {
-    global RunOnStartup
-    RunOnStartup := !RunOnStartup
-    IniWrite(RunOnStartup ? "1" : "0", SettingsFile, "Settings", "RunOnStartup")
-    try {
-        ApplyStartup(RunOnStartup)
-    } catch as e {
-        MsgBox("Could not update startup shortcut:`n" e.Message, "SyncthingTray", "Icon!")
-        RunOnStartup := !RunOnStartup
-        IniWrite(RunOnStartup ? "1" : "0", SettingsFile, "Settings", "RunOnStartup")
-    }
-    BuildMenu()
 }
 
 MenuStart(*) {
