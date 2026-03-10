@@ -1,0 +1,24 @@
+# AutoHotkey
+*.exe
+*.log
+
+# Config (user-specific)
+*.ini
+
+# OS files
+Thumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+.DS_Store
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Task Management
+AUDIT_TASKS.md
+TODO_LIST.md
+SCHEDULED_TASKS.md
