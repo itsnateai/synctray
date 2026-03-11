@@ -3,7 +3,7 @@
 Persistent
 
 ; ── Config ──────────────────────────────────────────────
-global Version      := "1.1.0"
+global Version      := "1.2.0"
 global SyncExe      := A_ScriptDir "\syncthing.exe"
 global WebUI        := "http://localhost:8384"
 global DblClickOpen := true
@@ -12,6 +12,9 @@ global ApiKey       := ""
 global SettingsFile := A_ScriptDir "\SyncthingTray.ini"
 ; Track whether we intentionally stopped syncthing (vs unexpected crash)
 global g_intentionalStop := false
+; P2-02: Sync status indicator — "idle", "syncing", "error", or "unknown"
+global g_syncStatus := "unknown"
+global g_syncDetail := ""
 
 ; ── Load Settings ───────────────────────────────────────
 if FileExist(SettingsFile) {
@@ -37,9 +40,10 @@ if !ProcessExist("syncthing.exe") {
 }
 
 ; ── Tray Icon ───────────────────────────────────────────
-A_IconTip := "SyncthingTray v" Version
 UpdateTrayIcon()
 SetTimer(UpdateTrayIcon, 5000)
+SetTimer(PollSyncStatus, 10000)  ; P2-02: Poll sync status every 10s
+PollSyncStatus()                  ; Initial poll
 
 UpdateTrayIcon() {
     global g_intentionalStop
@@ -69,6 +73,64 @@ UpdateTrayIcon() {
         else
             TraySetIcon("shell32.dll", 28)   ; paused/stop fallback
     }
+}
+
+; ── Sync Status Polling (P2-02) ────────────────────────
+PollSyncStatus() {
+    global ApiKey, WebUI, g_syncStatus, g_syncDetail
+    ; Only poll when syncthing is running and API key is configured
+    if (!ProcessExist("syncthing.exe") || ApiKey = "") {
+        g_syncStatus := (ProcessExist("syncthing.exe")) ? "unknown" : "stopped"
+        g_syncDetail := ""
+        UpdateTooltip()
+        return
+    }
+    try {
+        whr := ComObject("WinHttp.WinHttpRequest.5.1")
+        whr.Open("GET", WebUI "/rest/db/completion", false)
+        whr.SetRequestHeader("X-API-Key", ApiKey)
+        whr.Send()
+        if (whr.Status = 200) {
+            body := whr.ResponseText
+            ; Parse "completion" value from JSON — simple regex since AHK has no JSON lib
+            if RegExMatch(body, '"completion"\s*:\s*([\d.]+)', &m) {
+                pct := Round(Number(m[1]), 1)
+                if (pct >= 100) {
+                    g_syncStatus := "idle"
+                    g_syncDetail := "Up to date"
+                } else {
+                    g_syncStatus := "syncing"
+                    g_syncDetail := pct "% complete"
+                }
+            } else {
+                g_syncStatus := "idle"
+                g_syncDetail := "Connected"
+            }
+        } else {
+            g_syncStatus := "error"
+            g_syncDetail := "API HTTP " whr.Status
+        }
+    } catch as e {
+        g_syncStatus := "error"
+        g_syncDetail := "API unreachable"
+    }
+    UpdateTooltip()
+}
+
+UpdateTooltip() {
+    global Version, g_syncStatus, g_syncDetail
+    tip := "SyncthingTray v" Version
+    if (g_syncStatus = "idle")
+        tip .= " — Idle"
+    else if (g_syncStatus = "syncing")
+        tip .= " — Syncing"
+    else if (g_syncStatus = "error")
+        tip .= " — Error"
+    else if (g_syncStatus = "stopped")
+        tip .= " — Stopped"
+    if (g_syncDetail != "")
+        tip .= " (" g_syncDetail ")"
+    A_IconTip := tip
 }
 
 ; ── Build Tray Menu ─────────────────────────────────────
