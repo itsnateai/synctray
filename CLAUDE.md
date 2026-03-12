@@ -31,3 +31,9 @@ Ahk2Exe.exe /in SyncthingTray.ahk /out SyncthingTray.exe /compress 0
 - Use `/compress 0` when compiling to avoid Defender false positives
 - Never commit the INI file (may contain API key)
 - All globals prefixed with `g_` for non-config state variables
+
+## Status
+
+**v1.2.0 — Final release (shipped 2026-03-12)**
+
+All audit items resolved (9/9). Tracking files cleared. See FINAL_REPORT.md for summary.
