@@ -87,6 +87,39 @@ OnTrayNotify(wParam, lParam, msg, hwnd) {
         TogglePause()
 }
 
+; ── API Helpers ────────────────────────────────────────
+ApiGet(endpoint) {
+    global ApiKey, WebUI
+    whr := ComObject("WinHttp.WinHttpRequest.5.1")
+    whr.Open("GET", WebUI endpoint, false)
+    whr.SetRequestHeader("X-API-Key", ApiKey)
+    whr.Send()
+    return {status: whr.Status, body: whr.ResponseText}
+}
+
+ApiPost(endpoint, body := "") {
+    global ApiKey, WebUI
+    whr := ComObject("WinHttp.WinHttpRequest.5.1")
+    whr.Open("POST", WebUI endpoint, false)
+    whr.SetRequestHeader("X-API-Key", ApiKey)
+    if (body != "") {
+        whr.SetRequestHeader("Content-Type", "application/json")
+        whr.Send(body)
+    } else
+        whr.Send()
+    return {status: whr.Status, body: whr.ResponseText}
+}
+
+ApiPatch(endpoint, body) {
+    global ApiKey, WebUI
+    whr := ComObject("WinHttp.WinHttpRequest.5.1")
+    whr.Open("PATCH", WebUI endpoint, false)
+    whr.SetRequestHeader("X-API-Key", ApiKey)
+    whr.SetRequestHeader("Content-Type", "application/json")
+    whr.Send(body)
+    return {status: whr.Status, body: whr.ResponseText}
+}
+
 UpdateTrayIcon() {
     global g_intentionalStop, g_paused
     static lastState := -1
@@ -134,13 +167,9 @@ PollSyncStatus() {
 
     ; ── 1. Sync completion status ──
     try {
-        whr := ComObject("WinHttp.WinHttpRequest.5.1")
-        whr.Open("GET", WebUI "/rest/db/completion", false)
-        whr.SetRequestHeader("X-API-Key", ApiKey)
-        whr.Send()
-        if (whr.Status = 200) {
-            body := whr.ResponseText
-            if RegExMatch(body, '"completion"\s*:\s*([\d.]+)', &m) {
+        r := ApiGet("/rest/db/completion")
+        if (r.status = 200) {
+            if RegExMatch(r.body, '"completion"\s*:\s*([\d.]+)', &m) {
                 pct := Round(Number(m[1]), 1)
                 if (pct >= 100) {
                     g_syncStatus := g_paused ? "paused" : "idle"
@@ -155,7 +184,7 @@ PollSyncStatus() {
             }
         } else {
             g_syncStatus := "error"
-            g_syncDetail := "API HTTP " whr.Status
+            g_syncDetail := "API HTTP " r.status
         }
     } catch {
         g_syncStatus := "error"
@@ -164,12 +193,9 @@ PollSyncStatus() {
 
     ; ── 2. Device connect/disconnect tracking ──
     try {
-        whr2 := ComObject("WinHttp.WinHttpRequest.5.1")
-        whr2.Open("GET", WebUI "/rest/system/connections", false)
-        whr2.SetRequestHeader("X-API-Key", ApiKey)
-        whr2.Send()
-        if (whr2.Status = 200) {
-            connBody := whr2.ResponseText
+        r2 := ApiGet("/rest/system/connections")
+        if (r2.status = 200) {
+            connBody := r2.body
             ; Detect pause state: check if any device is paused
             allPaused := true
             deviceCount := 0
@@ -220,13 +246,9 @@ PollSyncStatus() {
 
     ; ── 3. File conflict detection ──
     try {
-        whr3 := ComObject("WinHttp.WinHttpRequest.5.1")
-        whr3.Open("GET", WebUI "/rest/db/status?folder=default", false)
-        whr3.SetRequestHeader("X-API-Key", ApiKey)
-        whr3.Send()
-        if (whr3.Status = 200) {
-            statusBody := whr3.ResponseText
-            if RegExMatch(statusBody, '"pullErrors"\s*:\s*(\d+)', &em) {
+        r3 := ApiGet("/rest/db/status?folder=default")
+        if (r3.status = 200) {
+            if RegExMatch(r3.body, '"pullErrors"\s*:\s*(\d+)', &em) {
                 errCount := Number(em[1])
                 ; Only alert when count increases (avoid spam)
                 if (errCount > g_lastConflictCount && g_lastConflictCount >= 0) {
@@ -271,12 +293,9 @@ LoadFolders() {
     if (ApiKey = "")
         return
     try {
-        whr := ComObject("WinHttp.WinHttpRequest.5.1")
-        whr.Open("GET", WebUI "/rest/config/folders", false)
-        whr.SetRequestHeader("X-API-Key", ApiKey)
-        whr.Send()
-        if (whr.Status = 200) {
-            body := whr.ResponseText
+        r := ApiGet("/rest/config/folders")
+        if (r.status = 200) {
+            body := r.body
             ; Parse folder objects: find "id", "label", "path" in each block
             pos := 1
             while (pos := RegExMatch(body, '"id"\s*:\s*"([^"]*)"', &mid, pos)) {
@@ -470,18 +489,53 @@ MenuOpenSettings(*) {
     edApiKey.SetFont("s8", "Consolas")
     y += 30
 
+    ; ── Discovery section ──
+    sg.SetFont("s8 cA0A0C0 bold", "Segoe UI")
+    sg.Add("Text", "x16 y" y " w70", "Discovery")
+    sg.Add("Text", "x76 y" (y + 4) " w" (sw - 86) " h1 Background404050")
+    y += 16
+    sg.SetFont("s9 cCDD6F3 norm", "Segoe UI")
+
+    ; Load current discovery settings from API
+    curGlobal := true, curLocal := true, curRelay := true
+    if (ApiKey != "") {
+        try {
+            rd := ApiGet("/rest/config/options")
+            if (rd.status = 200) {
+                if RegExMatch(rd.body, '"globalAnnounceEnabled"\s*:\s*(true|false)', &gm)
+                    curGlobal := (gm[1] = "true")
+                if RegExMatch(rd.body, '"localAnnounceEnabled"\s*:\s*(true|false)', &lm)
+                    curLocal := (lm[1] = "true")
+                if RegExMatch(rd.body, '"relaysEnabled"\s*:\s*(true|false)', &rm)
+                    curRelay := (rm[1] = "true")
+            }
+        }
+    }
+
+    cbGlobal := sg.Add("Checkbox", "x16 y" y " w320 cCDD6F3", "Global Discovery")
+    cbGlobal.Value := curGlobal ? 1 : 0
+    y += 24
+    cbLocal := sg.Add("Checkbox", "x16 y" y " w320 cCDD6F3", "Local Discovery")
+    cbLocal.Value := curLocal ? 1 : 0
+    y += 24
+    cbRelay := sg.Add("Checkbox", "x16 y" y " w320 cCDD6F3", "NAT Traversal (Relaying)")
+    cbRelay.Value := curRelay ? 1 : 0
+    y += 30
+
     ; ── Divider ──
     sg.Add("Text", "x0 y" y " w" sw " h1 Background404050")
     y += 8
 
-    ; Link buttons row
+    ; Link + utility buttons row
     sg.SetFont("s8 cCDD6F3 norm", "Segoe UI")
-    btnGH := sg.Add("Button", "x16 y" y " w78 h24", "GitHub")
+    btnGH := sg.Add("Button", "x16 y" y " w68 h24", "GitHub")
     btnGH.OnEvent("Click", (*) => Run("https://github.com/itsnateai/synctray"))
-    btnST := sg.Add("Button", "x98 y" y " w78 h24", "Syncthing")
+    btnST := sg.Add("Button", "x88 y" y " w68 h24", "Syncthing")
     btnST.OnEvent("Click", (*) => Run("https://github.com/syncthing/syncthing"))
-    btnHelp := sg.Add("Button", "x180 y" y " w78 h24", "Help")
+    btnHelp := sg.Add("Button", "x160 y" y " w58 h24", "Help")
     btnHelp.OnEvent("Click", (*) => ShowHelp())
+    btnCheck := sg.Add("Button", "x222 y" y " w120 h24", "Check Config")
+    btnCheck.OnEvent("Click", (*) => CheckConfig())
     y += 34
 
     ; Save / Cancel
@@ -514,6 +568,16 @@ MenuOpenSettings(*) {
         IniWrite(SyncExe, SettingsFile, "Settings", "SyncExe")
         IniWrite(WebUI, SettingsFile, "Settings", "WebUI")
         IniWrite(String(StartupDelay), SettingsFile, "Settings", "StartupDelay")
+        ; Save discovery settings to Syncthing API
+        if (ApiKey != "") {
+            try {
+                newGlobal := cbGlobal.Value = 1 ? "true" : "false"
+                newLocal  := cbLocal.Value = 1 ? "true" : "false"
+                newRelay  := cbRelay.Value = 1 ? "true" : "false"
+                patchBody := '{"globalAnnounceEnabled":' newGlobal ',"localAnnounceEnabled":' newLocal ',"relaysEnabled":' newRelay '}'
+                ApiPatch("/rest/config/options", patchBody)
+            }
+        }
         if !g_isPortable {
             try {
                 ApplyStartup(RunOnStartup)
@@ -539,17 +603,14 @@ TogglePause() {
 }
 
 MenuPause(*) {
-    global ApiKey, WebUI, g_paused
+    global ApiKey, g_paused
     if (ApiKey = "") {
         ToolTip("API Key required for pause — set in Settings")
         SetTimer(() => ToolTip(), -3000)
         return
     }
     try {
-        whr := ComObject("WinHttp.WinHttpRequest.5.1")
-        whr.Open("POST", WebUI "/rest/system/pause", false)
-        whr.SetRequestHeader("X-API-Key", ApiKey)
-        whr.Send()
+        ApiPost("/rest/system/pause")
         g_paused := true
         UpdateTrayIcon()
         BuildMenu()
@@ -562,17 +623,14 @@ MenuPause(*) {
 }
 
 MenuResume(*) {
-    global ApiKey, WebUI, g_paused
+    global ApiKey, g_paused
     if (ApiKey = "") {
         ToolTip("API Key required for resume — set in Settings")
         SetTimer(() => ToolTip(), -3000)
         return
     }
     try {
-        whr := ComObject("WinHttp.WinHttpRequest.5.1")
-        whr.Open("POST", WebUI "/rest/system/resume", false)
-        whr.SetRequestHeader("X-API-Key", ApiKey)
-        whr.Send()
+        ApiPost("/rest/system/resume")
         g_paused := false
         UpdateTrayIcon()
         BuildMenu()
@@ -587,7 +645,8 @@ MenuResume(*) {
 MenuStart(*) {
     try Run(SyncExe (StartBrowser ? "" : " --no-browser"), A_ScriptDir, "Hide")
     catch {
-        MsgBox("Could not launch syncthing.exe`nExpected at: " SyncExe, "SyncthingTray", "Icon!")
+        ToolTip("Could not launch syncthing.exe — check path in Settings")
+        SetTimer(() => ToolTip(), -5000)
         return
     }
     UpdateTrayIcon()
@@ -611,16 +670,12 @@ MenuStop(*) {
     }
 }
 
-; P1-02: Graceful shutdown via REST API, falling back to ProcessClose
+; Graceful shutdown via REST API, falling back to ProcessClose
 StopSyncthing() {
-    global ApiKey, WebUI
+    global ApiKey
     if (ApiKey != "") {
         try {
-            whr := ComObject("WinHttp.WinHttpRequest.5.1")
-            whr.Open("POST", WebUI "/rest/system/shutdown", false)
-            whr.SetRequestHeader("X-API-Key", ApiKey)
-            whr.Send()
-            ; Wait for syncthing to exit gracefully
+            ApiPost("/rest/system/shutdown")
             loop 50 {
                 if !ProcessExist("syncthing.exe")
                     return
@@ -702,4 +757,55 @@ ShowHelp() {
     btnClose.OnEvent("Click", (*) => hg.Destroy())
     hg.OnEvent("Close", (*) => hg.Destroy())
     hg.Show("w400 h380 Center")
+}
+
+; ── Config Check ─────────────────────────────────────────
+CheckConfig() {
+    global SyncExe, ApiKey
+    results := ""
+
+    ; Check syncthing.exe path
+    if FileExist(SyncExe)
+        results .= "✓ Syncthing exe: Found`n"
+    else
+        results .= "✗ Syncthing exe: NOT FOUND at " SyncExe "`n"
+
+    ; Check if process is running
+    if ProcessExist("syncthing.exe")
+        results .= "✓ Process: Running`n"
+    else
+        results .= "✗ Process: Not running`n"
+
+    ; Check API connectivity
+    if (ApiKey = "") {
+        results .= "✗ API Key: Not set`n"
+    } else {
+        try {
+            r := ApiGet("/rest/system/status")
+            if (r.status = 200)
+                results .= "✓ API: Connected (HTTP 200)`n"
+            else
+                results .= "✗ API: HTTP " r.status "`n"
+        } catch {
+            results .= "✗ API: Unreachable`n"
+        }
+
+        ; Check discovery settings
+        try {
+            r2 := ApiGet("/rest/config/options")
+            if (r2.status = 200) {
+                gd := "off", ld := "off", rl := "off"
+                if RegExMatch(r2.body, '"globalAnnounceEnabled"\s*:\s*true')
+                    gd := "on"
+                if RegExMatch(r2.body, '"localAnnounceEnabled"\s*:\s*true')
+                    ld := "on"
+                if RegExMatch(r2.body, '"relaysEnabled"\s*:\s*true')
+                    rl := "on"
+                results .= "  Discovery: Global=" gd " Local=" ld " NAT=" rl "`n"
+            }
+        }
+    }
+
+    ToolTip(results)
+    SetTimer(() => ToolTip(), -8000)
 }
