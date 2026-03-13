@@ -26,6 +26,8 @@ global g_paused := false
 ; v1.5.0: Device counter for tooltip
 global g_connectedCount := 0
 global g_totalDevices := 0
+; v1.5.0: Cached folder list for tray submenu
+global g_folders := []
 
 ; ── Portable Mode Detection ─────────────────────────────
 try {
@@ -73,6 +75,9 @@ PollSyncStatus()                  ; Initial poll
 ; v1.5.0: First-run — open settings if no INI exists yet
 if g_firstRun
     SetTimer(MenuOpenSettings, -500)
+
+; v1.5.0: Load synced folders for tray submenu (once on startup)
+LoadFolders()
 
 ; v1.5.0: Middle-click tray icon toggles pause/resume
 OnMessage(0x404, OnTrayNotify)
@@ -259,9 +264,47 @@ UpdateTooltip() {
     A_IconTip := tip
 }
 
+; ── Load Synced Folders ────────────────────────────────
+LoadFolders() {
+    global ApiKey, WebUI, g_folders
+    g_folders := []
+    if (ApiKey = "")
+        return
+    try {
+        whr := ComObject("WinHttp.WinHttpRequest.5.1")
+        whr.Open("GET", WebUI "/rest/config/folders", false)
+        whr.SetRequestHeader("X-API-Key", ApiKey)
+        whr.Send()
+        if (whr.Status = 200) {
+            body := whr.ResponseText
+            ; Parse folder objects: find "id", "label", "path" in each block
+            pos := 1
+            while (pos := RegExMatch(body, '"id"\s*:\s*"([^"]*)"', &mid, pos)) {
+                fId := mid[1]
+                fLabel := ""
+                fPath := ""
+                searchFrom := mid.Pos + mid.Len
+                ; Look for label and path nearby (within next 500 chars)
+                if RegExMatch(body, '"label"\s*:\s*"([^"]*)"', &ml, searchFrom)
+                    fLabel := ml[1]
+                if RegExMatch(body, '"path"\s*:\s*"([^"]*)"', &mp, searchFrom)
+                    fPath := mp[1]
+                ; Use label if set, otherwise id
+                displayName := (fLabel != "") ? fLabel : fId
+                if (fPath != "")
+                    g_folders.Push({id: fId, label: displayName, path: fPath})
+                pos := searchFrom
+            }
+        }
+    } catch {
+        ; Folder loading is best-effort
+    }
+    BuildMenu()
+}
+
 ; ── Build Tray Menu ─────────────────────────────────────
 BuildMenu() {
-    global DblClickOpen, RunOnStartup, WebUI, Version, g_paused
+    global DblClickOpen, RunOnStartup, WebUI, Version, g_paused, g_folders
 
     tray := A_TrayMenu
     tray.Delete()
@@ -274,6 +317,18 @@ BuildMenu() {
 
     ; Clickable localhost URL
     tray.Add(WebUI, MenuOpenUI)
+
+    ; Synced folders submenu
+    if (g_folders.Length > 0) {
+        folderMenu := Menu()
+        for f in g_folders {
+            p := f.path
+            folderMenu.Add(f.label, OpenFolder.Bind(p))
+        }
+        folderMenu.Add()
+        folderMenu.Add("Refresh", (*) => LoadFolders())
+        tray.Add("Synced Folders", folderMenu)
+    }
     tray.Add()
 
     tray.Add("Settings...", MenuOpenSettings)
@@ -326,6 +381,15 @@ ApplyStartup(enable) {
 ; ── Menu Actions ────────────────────────────────────────
 MenuOpenUI(*) {
     Run(WebUI)
+}
+
+OpenFolder(path, *) {
+    if DirExist(path)
+        Run("explorer.exe " path)
+    else {
+        ToolTip("Folder not found: " path)
+        SetTimer(() => ToolTip(), -3000)
+    }
 }
 
 MenuOpenSettings(*) {
@@ -458,7 +522,7 @@ MenuOpenSettings(*) {
                 SetTimer(() => ToolTip(), -5000)
             }
         }
-        BuildMenu()
+        LoadFolders()  ; Refresh folder list (also rebuilds menu)
         sg.Destroy()
         ToolTip("Settings saved")
         SetTimer(() => ToolTip(), -3000)
