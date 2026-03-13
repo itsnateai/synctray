@@ -10,7 +10,9 @@ global DblClickOpen := true
 global RunOnStartup := false
 global StartBrowser := false
 global ApiKey       := ""
+global StartupDelay := 0
 global SettingsFile := A_ScriptDir "\SyncthingTray.ini"
+global g_isPortable := false
 ; Track whether we intentionally stopped syncthing (vs unexpected crash)
 global g_intentionalStop := false
 ; P2-02: Sync status indicator — "idle", "syncing", "error", or "unknown"
@@ -25,29 +27,40 @@ global g_paused := false
 global g_connectedCount := 0
 global g_totalDevices := 0
 
+; ── Portable Mode Detection ─────────────────────────────
+try {
+    driveLetter := SubStr(A_ScriptDir, 1, 3)
+    if (DriveGetType(driveLetter) = "Removable")
+        g_isPortable := true
+}
+
 ; ── Load Settings ───────────────────────────────────────
-if FileExist(SettingsFile) {
+g_firstRun := !FileExist(SettingsFile)
+if !g_firstRun {
     try {
-        val := IniRead(SettingsFile, "Settings", "DblClickOpen", "1")
-        DblClickOpen := (val = "1")
-
-        val2 := IniRead(SettingsFile, "Settings", "RunOnStartup", "0")
-        RunOnStartup := (val2 = "1")
-
-        val3 := IniRead(SettingsFile, "Settings", "ApiKey", "")
-        ApiKey := val3
-
-        val4 := IniRead(SettingsFile, "Settings", "StartBrowser", "0")
-        StartBrowser := (val4 = "1")
+        DblClickOpen := (IniRead(SettingsFile, "Settings", "DblClickOpen", "1") = "1")
+        RunOnStartup := (IniRead(SettingsFile, "Settings", "RunOnStartup", "0") = "1")
+        ApiKey       := IniRead(SettingsFile, "Settings", "ApiKey", "")
+        StartBrowser := (IniRead(SettingsFile, "Settings", "StartBrowser", "0") = "1")
+        StartupDelay := Number(IniRead(SettingsFile, "Settings", "StartupDelay", "0"))
+        ; Load custom paths (fall back to defaults)
+        v := IniRead(SettingsFile, "Settings", "SyncExe", "")
+        if (v != "")
+            SyncExe := v
+        v := IniRead(SettingsFile, "Settings", "WebUI", "")
+        if (v != "")
+            WebUI := v
     }
 }
 
 ; ── Launch Syncthing Hidden ─────────────────────────────
+if (StartupDelay > 0)
+    Sleep(StartupDelay * 1000)
 if !ProcessExist("syncthing.exe") {
     try Run(SyncExe (StartBrowser ? "" : " --no-browser"), A_ScriptDir, "Hide")
     catch {
-        MsgBox("Could not launch syncthing.exe`nExpected at: " SyncExe, "SyncthingTray", "Icon!")
-        ExitApp()
+        ToolTip("Could not launch syncthing.exe — check path in Settings")
+        SetTimer(() => ToolTip(), -5000)
     }
 }
 
@@ -56,6 +69,10 @@ UpdateTrayIcon()
 SetTimer(UpdateTrayIcon, 5000)
 SetTimer(PollSyncStatus, 10000)  ; P2-02: Poll sync status every 10s
 PollSyncStatus()                  ; Initial poll
+
+; v1.5.0: First-run — open settings if no INI exists yet
+if g_firstRun
+    SetTimer(MenuOpenSettings, -500)
 
 ; v1.5.0: Middle-click tray icon toggles pause/resume
 OnMessage(0x404, OnTrayNotify)
@@ -313,6 +330,7 @@ MenuOpenUI(*) {
 
 MenuOpenSettings(*) {
     global DblClickOpen, RunOnStartup, StartBrowser, ApiKey, Version, WebUI
+    global SyncExe, StartupDelay, g_isPortable
 
     ; Only allow one instance of the settings window
     if WinExist("SyncthingTray Settings") {
@@ -320,76 +338,125 @@ MenuOpenSettings(*) {
         return
     }
 
-    sw := 320
-    sh := 300
+    sw := 360
+    sh := 430
+    y := 14
 
     sg := Gui("+AlwaysOnTop -Resize +ToolWindow", "SyncthingTray Settings")
     sg.BackColor := "1E1E2E"
     sg.SetFont("s9 cCDD6F3 bold", "Segoe UI")
-    sg.Add("Text", "x16 y14 w288", "SyncthingTray v" Version)
+    sg.Add("Text", "x16 y" y " w328", "SyncthingTray v" Version)
+    y += 22
+    sg.Add("Text", "x0 y" y " w" sw " h1 Background404050")
+    y += 10
 
-    ; Divider
-    sg.Add("Text", "x0 y34 w" sw " h1 Background404050")
+    ; ── General ──
+    sg.SetFont("s9 cCDD6F3 norm", "Segoe UI")
+    cbDbl := sg.Add("Checkbox", "x16 y" y " w320 cCDD6F3", "Double-click tray icon opens Web UI")
+    cbDbl.Value := DblClickOpen ? 1 : 0
+    y += 26
 
+    cbStart := sg.Add("Checkbox", "x16 y" y " w320 cCDD6F3", "Run on startup")
+    cbStart.Value := RunOnStartup ? 1 : 0
+    if g_isPortable {
+        cbStart.Enabled := false
+        sg.Add("Text", "x36 y" (y + 18) " w300 s8 c808090", "(not available in portable mode)")
+        y += 16
+    }
+    y += 26
+
+    cbBrowser := sg.Add("Checkbox", "x16 y" y " w320 cCDD6F3", "Start browser when Syncthing launches")
+    cbBrowser.Value := StartBrowser ? 1 : 0
+    y += 26
+
+    sg.Add("Text", "x16 y" y " w90 cA0A0C0", "Startup Delay:")
+    edDelay := sg.Add("Edit", "x110 y" (y - 2) " w50 h22 cCDD6F3 Background2A2A3E Number", String(StartupDelay))
+    sg.Add("Text", "x166 y" y " w80 cA0A0C0", "seconds")
+    y += 30
+
+    ; ── Paths section ──
+    sg.SetFont("s8 cA0A0C0 bold", "Segoe UI")
+    sg.Add("Text", "x16 y" y " w50", "Paths")
+    sg.Add("Text", "x50 y" (y + 4) " w" (sw - 60) " h1 Background404050")
+    y += 16
     sg.SetFont("s9 cCDD6F3 norm", "Segoe UI")
 
-    ; Checkboxes
-    cbDbl := sg.Add("Checkbox", "x16 y48 w280 cCDD6F3", "Double-click tray icon opens Web UI")
-    cbDbl.Value := DblClickOpen ? 1 : 0
+    sg.Add("Text", "x16 y" y " w90 cA0A0C0", "Syncthing:")
+    edExe := sg.Add("Edit", "x80 y" (y - 2) " w210 h22 cCDD6F3 Background2A2A3E", SyncExe)
+    edExe.SetFont("s8", "Consolas")
+    btnBrowse := sg.Add("Button", "x294 y" (y - 3) " w50 h24", "...")
+    btnBrowse.SetFont("s8", "Segoe UI")
+    btnBrowse.OnEvent("Click", (*) => (f := FileSelect(3, SyncExe, "Select syncthing.exe", "Executables (*.exe)"), f != "" ? edExe.Value := f : ""))
+    y += 28
 
-    cbStart := sg.Add("Checkbox", "x16 y74 w280 cCDD6F3", "Run on startup")
-    cbStart.Value := RunOnStartup ? 1 : 0
+    sg.Add("Text", "x16 y" y " w90 cA0A0C0", "Web UI:")
+    edWebUI := sg.Add("Edit", "x80 y" (y - 2) " w210 h22 cCDD6F3 Background2A2A3E", WebUI)
+    edWebUI.SetFont("s8", "Consolas")
+    y += 30
 
-    cbBrowser := sg.Add("Checkbox", "x16 y100 w280 cCDD6F3", "Start browser when Syncthing launches")
-    cbBrowser.Value := StartBrowser ? 1 : 0
+    ; ── API Key ──
+    sg.SetFont("s8 cA0A0C0 bold", "Segoe UI")
+    sg.Add("Text", "x16 y" y " w50", "API")
+    sg.Add("Text", "x40 y" (y + 4) " w" (sw - 50) " h1 Background404050")
+    y += 16
+    sg.SetFont("s9 cCDD6F3 norm", "Segoe UI")
 
-    ; API Key
-    sg.Add("Text", "x16 y130 w60 cA0A0C0", "API Key:")
-    edApiKey := sg.Add("Edit", "x80 y128 w220 h22 cCDD6F3 Background2A2A3E", ApiKey)
+    sg.Add("Text", "x16 y" y " w60 cA0A0C0", "API Key:")
+    edApiKey := sg.Add("Edit", "x80 y" (y - 2) " w260 h22 cCDD6F3 Background2A2A3E", ApiKey)
     edApiKey.SetFont("s8", "Consolas")
+    y += 30
 
-    ; Divider
-    sg.Add("Text", "x0 y160 w" sw " h1 Background404050")
+    ; ── Divider ──
+    sg.Add("Text", "x0 y" y " w" sw " h1 Background404050")
+    y += 8
 
     ; Link buttons row
     sg.SetFont("s8 cCDD6F3 norm", "Segoe UI")
-    btnGH := sg.Add("Button", "x16 y170 w88 h24", "GitHub")
+    btnGH := sg.Add("Button", "x16 y" y " w78 h24", "GitHub")
     btnGH.OnEvent("Click", (*) => Run("https://github.com/itsnateai/synctray"))
-    btnST := sg.Add("Button", "x108 y170 w88 h24", "Syncthing")
+    btnST := sg.Add("Button", "x98 y" y " w78 h24", "Syncthing")
     btnST.OnEvent("Click", (*) => Run("https://github.com/syncthing/syncthing"))
-    btnHelp := sg.Add("Button", "x200 y170 w100 h24", "Help")
+    btnHelp := sg.Add("Button", "x180 y" y " w78 h24", "Help")
     btnHelp.OnEvent("Click", (*) => ShowHelp())
-
-    ; Divider
-    sg.Add("Text", "x0 y204 w" sw " h1 Background404050")
+    y += 34
 
     ; Save / Cancel
     sg.SetFont("s9 cCDD6F3 norm", "Segoe UI")
-    btnSave   := sg.Add("Button", "x16 y216 w138 h30 Default", "Save")
-    btnCancel := sg.Add("Button", "x162 y216 w138 h30", "Cancel")
+    btnSave   := sg.Add("Button", "x16 y" y " w158 h30 Default", "Save")
+    btnCancel := sg.Add("Button", "x182 y" y " w158 h30", "Cancel")
+    y += 40
+    sh := y
 
     btnSave.OnEvent("Click", SaveSettings)
     btnCancel.OnEvent("Click", (*) => sg.Destroy())
     sg.OnEvent("Close", (*) => sg.Destroy())
 
-    ; Center on screen
     sg.Show("w" sw " h" sh " Center")
 
     SaveSettings(*) {
         global DblClickOpen, RunOnStartup, StartBrowser, ApiKey
+        global SyncExe, WebUI, StartupDelay
         DblClickOpen  := cbDbl.Value = 1
-        RunOnStartup  := cbStart.Value = 1
+        RunOnStartup  := g_isPortable ? false : (cbStart.Value = 1)
         StartBrowser  := cbBrowser.Value = 1
         ApiKey        := edApiKey.Value
+        SyncExe       := edExe.Value
+        WebUI         := edWebUI.Value
+        StartupDelay  := Number(edDelay.Value)
         IniWrite(DblClickOpen  ? "1" : "0", SettingsFile, "Settings", "DblClickOpen")
         IniWrite(RunOnStartup  ? "1" : "0", SettingsFile, "Settings", "RunOnStartup")
         IniWrite(StartBrowser  ? "1" : "0", SettingsFile, "Settings", "StartBrowser")
         IniWrite(ApiKey, SettingsFile, "Settings", "ApiKey")
-        try {
-            ApplyStartup(RunOnStartup)
-        } catch as e {
-            ToolTip("Could not update startup shortcut: " e.Message)
-            SetTimer(() => ToolTip(), -5000)
+        IniWrite(SyncExe, SettingsFile, "Settings", "SyncExe")
+        IniWrite(WebUI, SettingsFile, "Settings", "WebUI")
+        IniWrite(String(StartupDelay), SettingsFile, "Settings", "StartupDelay")
+        if !g_isPortable {
+            try {
+                ApplyStartup(RunOnStartup)
+            } catch as e {
+                ToolTip("Could not update startup shortcut: " e.Message)
+                SetTimer(() => ToolTip(), -5000)
+            }
         }
         BuildMenu()
         sg.Destroy()
