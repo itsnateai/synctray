@@ -28,6 +28,10 @@ global g_connectedCount := 0
 global g_totalDevices := 0
 ; v1.5.0: Cached folder list for tray submenu
 global g_folders := []
+; v1.5.0: Network auto-pause
+global NetworkAutoPause := false
+global g_lastNetworkCategory := -1
+global g_autoPaused := false
 
 ; ── Portable Mode Detection ─────────────────────────────
 try {
@@ -52,6 +56,7 @@ if !g_firstRun {
         v := IniRead(SettingsFile, "Settings", "WebUI", "")
         if (v != "")
             WebUI := v
+        NetworkAutoPause := (IniRead(SettingsFile, "Settings", "NetworkAutoPause", "0") = "1")
     }
 }
 
@@ -263,6 +268,35 @@ PollSyncStatus() {
         ; Conflict check is best-effort
     }
 
+    ; ── 4. Network auto-pause ──
+    if NetworkAutoPause {
+        try {
+            cat := GetNetworkCategory()
+            if (cat != g_lastNetworkCategory && g_lastNetworkCategory != -1) {
+                if (cat = 0 && !g_paused) {
+                    ; Public network detected — auto-pause
+                    ApiPost("/rest/system/pause")
+                    g_paused := true
+                    g_autoPaused := true
+                    UpdateTrayIcon()
+                    BuildMenu()
+                    ToolTip("Auto-paused: public network detected")
+                    SetTimer(() => ToolTip(), -3000)
+                } else if (cat != 0 && g_autoPaused) {
+                    ; Back on private/domain — auto-resume
+                    ApiPost("/rest/system/resume")
+                    g_paused := false
+                    g_autoPaused := false
+                    UpdateTrayIcon()
+                    BuildMenu()
+                    ToolTip("Auto-resumed: private network detected")
+                    SetTimer(() => ToolTip(), -3000)
+                }
+            }
+            g_lastNetworkCategory := cat
+        }
+    }
+
     UpdateTooltip()
 }
 
@@ -452,6 +486,10 @@ MenuOpenSettings(*) {
     cbBrowser.Value := StartBrowser ? 1 : 0
     y += 26
 
+    cbNetPause := sg.Add("Checkbox", "x16 y" y " w320 cCDD6F3", "Auto-pause on public networks")
+    cbNetPause.Value := NetworkAutoPause ? 1 : 0
+    y += 26
+
     sg.Add("Text", "x16 y" y " w90 cA0A0C0", "Startup Delay:")
     edDelay := sg.Add("Edit", "x110 y" (y - 2) " w50 h22 cCDD6F3 Background2A2A3E Number", String(StartupDelay))
     sg.Add("Text", "x166 y" y " w80 cA0A0C0", "seconds")
@@ -553,10 +591,11 @@ MenuOpenSettings(*) {
 
     SaveSettings(*) {
         global DblClickOpen, RunOnStartup, StartBrowser, ApiKey
-        global SyncExe, WebUI, StartupDelay
+        global SyncExe, WebUI, StartupDelay, NetworkAutoPause
         DblClickOpen  := cbDbl.Value = 1
         RunOnStartup  := g_isPortable ? false : (cbStart.Value = 1)
         StartBrowser  := cbBrowser.Value = 1
+        NetworkAutoPause := cbNetPause.Value = 1
         ApiKey        := edApiKey.Value
         SyncExe       := edExe.Value
         WebUI         := edWebUI.Value
@@ -568,6 +607,7 @@ MenuOpenSettings(*) {
         IniWrite(SyncExe, SettingsFile, "Settings", "SyncExe")
         IniWrite(WebUI, SettingsFile, "Settings", "WebUI")
         IniWrite(String(StartupDelay), SettingsFile, "Settings", "StartupDelay")
+        IniWrite(NetworkAutoPause ? "1" : "0", SettingsFile, "Settings", "NetworkAutoPause")
         ; Save discovery settings to Syncthing API
         if (ApiKey != "") {
             try {
@@ -757,6 +797,17 @@ ShowHelp() {
     btnClose.OnEvent("Click", (*) => hg.Destroy())
     hg.OnEvent("Close", (*) => hg.Destroy())
     hg.Show("w400 h380 Center")
+}
+
+; ── Network Category Detection ────────────────────────────
+; Returns 0=Public, 1=Private, 2=DomainAuthenticated, -1=unknown
+GetNetworkCategory() {
+    try {
+        wmi := ComObject("WbemScripting.SWbemLocator").ConnectServer(".", "root\StandardCimv2")
+        for profile in wmi.ExecQuery("SELECT NetworkCategory FROM MSFT_NetConnectionProfile")
+            return profile.NetworkCategory
+    }
+    return -1
 }
 
 ; ── Config Check ─────────────────────────────────────────
