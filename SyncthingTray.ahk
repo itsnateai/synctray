@@ -3,11 +3,12 @@
 Persistent
 
 ; ── Config ──────────────────────────────────────────────
-global Version      := "1.2.0"
+global Version      := "1.3.0"
 global SyncExe      := A_ScriptDir "\syncthing.exe"
 global WebUI        := "http://localhost:8384"
 global DblClickOpen := true
 global RunOnStartup := false
+global StartBrowser := false
 global ApiKey       := ""
 global SettingsFile := A_ScriptDir "\SyncthingTray.ini"
 ; Track whether we intentionally stopped syncthing (vs unexpected crash)
@@ -27,12 +28,15 @@ if FileExist(SettingsFile) {
 
         val3 := IniRead(SettingsFile, "Settings", "ApiKey", "")
         ApiKey := val3
+
+        val4 := IniRead(SettingsFile, "Settings", "StartBrowser", "0")
+        StartBrowser := (val4 = "1")
     }
 }
 
 ; ── Launch Syncthing Hidden ─────────────────────────────
 if !ProcessExist("syncthing.exe") {
-    try Run(SyncExe " --no-browser", A_ScriptDir, "Hide")
+    try Run(SyncExe (StartBrowser ? "" : " --no-browser"), A_ScriptDir, "Hide")
     catch {
         MsgBox("Could not launch syncthing.exe`nExpected at: " SyncExe, "SyncthingTray", "Icon!")
         ExitApp()
@@ -194,7 +198,7 @@ MenuOpenUI(*) {
 }
 
 MenuOpenSettings(*) {
-    global DblClickOpen, RunOnStartup, ApiKey, Version, WebUI
+    global DblClickOpen, RunOnStartup, StartBrowser, ApiKey, Version, WebUI
 
     ; Only allow one instance of the settings window
     if WinExist("SyncthingTray Settings") {
@@ -203,7 +207,7 @@ MenuOpenSettings(*) {
     }
 
     sw := 320
-    sh := 250
+    sh := 276
 
     sg := Gui("+AlwaysOnTop -Resize +ToolWindow", "SyncthingTray Settings")
     sg.BackColor := "1E1E2E"
@@ -222,27 +226,30 @@ MenuOpenSettings(*) {
     cbStart := sg.Add("Checkbox", "x16 y74 w280 cCDD6F3", "Run on startup")
     cbStart.Value := RunOnStartup ? 1 : 0
 
+    cbBrowser := sg.Add("Checkbox", "x16 y100 w280 cCDD6F3", "Start browser when Syncthing launches")
+    cbBrowser.Value := StartBrowser ? 1 : 0
+
     ; API Key for graceful shutdown
-    sg.Add("Text", "x16 y100 w60 cA0A0C0", "API Key:")
-    edApiKey := sg.Add("Edit", "x80 y98 w220 h22 cCDD6F3 Background2A2A3E", ApiKey)
+    sg.Add("Text", "x16 y126 w60 cA0A0C0", "API Key:")
+    edApiKey := sg.Add("Edit", "x80 y124 w220 h22 cCDD6F3 Background2A2A3E", ApiKey)
     edApiKey.SetFont("s8", "Consolas")
 
     ; Divider
-    sg.Add("Text", "x0 y130 w" sw " h1 Background404050")
+    sg.Add("Text", "x0 y156 w" sw " h1 Background404050")
 
     ; GitHub button
     sg.SetFont("s9 cCDD6F3 norm", "Segoe UI")
-    sg.Add("Text", "x16 y142 w60 cA0A0C0", "GitHub:")
-    btnGH := sg.Add("Button", "x80 y138 w200 h22", "github.com/itsnateai/SyncthingTray")
+    sg.Add("Text", "x16 y168 w60 cA0A0C0", "GitHub:")
+    btnGH := sg.Add("Button", "x80 y164 w200 h22", "github.com/itsnateai/SyncthingTray")
     btnGH.SetFont("s8", "Segoe UI")
     btnGH.OnEvent("Click", (*) => Run("https://github.com/itsnateai/SyncthingTray"))
 
     ; Divider
-    sg.Add("Text", "x0 y172 w" sw " h1 Background404050")
+    sg.Add("Text", "x0 y198 w" sw " h1 Background404050")
 
     ; Save / Cancel
-    btnSave   := sg.Add("Button", "x16 y184 w130 h30 Default", "Save")
-    btnCancel := sg.Add("Button", "x158 y184 w130 h30", "Cancel")
+    btnSave   := sg.Add("Button", "x16 y210 w130 h30 Default", "Save")
+    btnCancel := sg.Add("Button", "x158 y210 w130 h30", "Cancel")
 
     btnSave.OnEvent("Click", SaveSettings)
     btnCancel.OnEvent("Click", (*) => sg.Destroy())
@@ -252,12 +259,14 @@ MenuOpenSettings(*) {
     sg.Show("w" sw " h" sh " Center")
 
     SaveSettings(*) {
-        global DblClickOpen, RunOnStartup, ApiKey
+        global DblClickOpen, RunOnStartup, StartBrowser, ApiKey
         DblClickOpen  := cbDbl.Value = 1
         RunOnStartup  := cbStart.Value = 1
+        StartBrowser  := cbBrowser.Value = 1
         ApiKey        := edApiKey.Value
         IniWrite(DblClickOpen  ? "1" : "0", SettingsFile, "Settings", "DblClickOpen")
         IniWrite(RunOnStartup  ? "1" : "0", SettingsFile, "Settings", "RunOnStartup")
+        IniWrite(StartBrowser  ? "1" : "0", SettingsFile, "Settings", "StartBrowser")
         IniWrite(ApiKey, SettingsFile, "Settings", "ApiKey")
         try {
             ApplyStartup(RunOnStartup)
@@ -271,7 +280,7 @@ MenuOpenSettings(*) {
 }
 
 MenuStart(*) {
-    try Run(SyncExe " --no-browser", A_ScriptDir, "Hide")
+    try Run(SyncExe (StartBrowser ? "" : " --no-browser"), A_ScriptDir, "Hide")
     catch {
         MsgBox("Could not launch syncthing.exe`nExpected at: " SyncExe, "SyncthingTray", "Icon!")
         return
@@ -328,7 +337,7 @@ MenuRestart(*) {
         g_intentionalStop := true
         StopSyncthing()
     }
-    try Run(SyncExe " --no-browser", A_ScriptDir, "Hide")
+    try Run(SyncExe (StartBrowser ? "" : " --no-browser"), A_ScriptDir, "Hide")
     UpdateTrayIcon()
     BuildMenu()
     TrayTip("Syncthing restarted", "SyncthingTray")
