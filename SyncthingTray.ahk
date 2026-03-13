@@ -32,6 +32,11 @@ global g_folders := []
 global NetworkAutoPause := false
 global g_lastNetworkCategory := -1
 global g_autoPaused := false
+; v1.5.0: Auto-updater
+global AutoCheckUpdates := false
+global g_lastUpdateCheck := 0
+global g_updateAvailable := ""
+global g_updateRunning := ""
 
 ; ── Portable Mode Detection ─────────────────────────────
 try {
@@ -57,6 +62,7 @@ if !g_firstRun {
         if (v != "")
             WebUI := v
         NetworkAutoPause := (IniRead(SettingsFile, "Settings", "NetworkAutoPause", "0") = "1")
+        AutoCheckUpdates := (IniRead(SettingsFile, "Settings", "AutoCheckUpdates", "0") = "1")
     }
 }
 
@@ -297,7 +303,89 @@ PollSyncStatus() {
         }
     }
 
+    ; ── Section 5: Auto-update check (rate-limited to once per 24h) ──
+    if (AutoCheckUpdates && ApiKey != "" && ProcessExist("syncthing.exe")) {
+        elapsed := A_TickCount - g_lastUpdateCheck
+        if (g_lastUpdateCheck = 0 || elapsed > 86400000) {  ; 24 hours in ms
+            CheckForUpdate()
+        }
+    }
+
     UpdateTooltip()
+}
+
+; ── Update Check Functions ───────────────────────────────
+CheckForUpdate() {
+    global g_lastUpdateCheck, g_updateAvailable, g_updateRunning
+    g_lastUpdateCheck := A_TickCount
+    try {
+        r := ApiGet("/rest/system/upgrade")
+        if (r.status = 200) {
+            newer := false
+            latest := ""
+            running := ""
+            if RegExMatch(r.body, '"newer"\s*:\s*(true|false)', &mn)
+                newer := (mn[1] = "true")
+            if RegExMatch(r.body, '"latest"\s*:\s*"([^"]*)"', &ml)
+                latest := ml[1]
+            if RegExMatch(r.body, '"running"\s*:\s*"([^"]*)"', &mr)
+                running := mr[1]
+            g_updateRunning := running
+            if (newer && latest != "") {
+                g_updateAvailable := latest
+                BuildMenu()
+                ToolTip("Syncthing update available: " latest " (current: " running ")")
+                SetTimer(() => ToolTip(), -5000)
+            } else {
+                g_updateAvailable := ""
+                BuildMenu()
+            }
+        }
+    } catch {
+        ; Update check is best-effort
+    }
+}
+
+MenuCheckUpdate(*) {
+    global ApiKey, g_updateAvailable
+    if (ApiKey = "") {
+        ToolTip("API Key required — set in Settings")
+        SetTimer(() => ToolTip(), -3000)
+        return
+    }
+    ; If update already found, trigger the upgrade
+    if (g_updateAvailable != "") {
+        DoUpdate()
+        return
+    }
+    ToolTip("Checking for updates...")
+    SetTimer(() => ToolTip(), -2000)
+    CheckForUpdate()
+    if (g_updateAvailable = "") {
+        ToolTip("Syncthing is up to date" (g_updateRunning != "" ? " (" g_updateRunning ")" : ""))
+        SetTimer(() => ToolTip(), -3000)
+    }
+}
+
+DoUpdate() {
+    global g_updateAvailable
+    if (g_updateAvailable = "")
+        return
+    try {
+        r := ApiPost("/rest/system/upgrade")
+        if (r.status = 200) {
+            ToolTip("Syncthing upgrading to " g_updateAvailable "...")
+            SetTimer(() => ToolTip(), -5000)
+            g_updateAvailable := ""
+            BuildMenu()
+        } else {
+            ToolTip("Upgrade failed (HTTP " r.status ")")
+            SetTimer(() => ToolTip(), -5000)
+        }
+    } catch {
+        ToolTip("Upgrade request failed")
+        SetTimer(() => ToolTip(), -5000)
+    }
 }
 
 UpdateTooltip() {
@@ -402,6 +490,12 @@ BuildMenu() {
         tray.Add("Stop Syncthing", MenuStop)
     else
         tray.Add("Start Syncthing", MenuStart)
+
+    ; Update check
+    if ProcessExist("syncthing.exe") {
+        updateLabel := (g_updateAvailable != "") ? "Update Available: " g_updateAvailable : "Check for Updates"
+        tray.Add(updateLabel, MenuCheckUpdate)
+    }
     tray.Add()
     tray.Add("Exit", MenuExit)
 
@@ -560,6 +654,17 @@ MenuOpenSettings(*) {
     cbRelay.Value := curRelay ? 1 : 0
     y += 30
 
+    ; ── Updates section ──
+    sg.SetFont("s8 cA0A0C0 bold", "Segoe UI")
+    sg.Add("Text", "x16 y" y " w60", "Updates")
+    sg.Add("Text", "x66 y" (y + 4) " w" (sw - 76) " h1 Background404050")
+    y += 16
+    sg.SetFont("s9 cCDD6F3 norm", "Segoe UI")
+
+    cbUpdates := sg.Add("Checkbox", "x16 y" y " w320 cCDD6F3", "Check for Syncthing updates (daily)")
+    cbUpdates.Value := AutoCheckUpdates ? 1 : 0
+    y += 30
+
     ; ── Divider ──
     sg.Add("Text", "x0 y" y " w" sw " h1 Background404050")
     y += 8
@@ -591,11 +696,12 @@ MenuOpenSettings(*) {
 
     SaveSettings(*) {
         global DblClickOpen, RunOnStartup, StartBrowser, ApiKey
-        global SyncExe, WebUI, StartupDelay, NetworkAutoPause
+        global SyncExe, WebUI, StartupDelay, NetworkAutoPause, AutoCheckUpdates
         DblClickOpen  := cbDbl.Value = 1
         RunOnStartup  := g_isPortable ? false : (cbStart.Value = 1)
         StartBrowser  := cbBrowser.Value = 1
         NetworkAutoPause := cbNetPause.Value = 1
+        AutoCheckUpdates := cbUpdates.Value = 1
         ApiKey        := edApiKey.Value
         SyncExe       := edExe.Value
         WebUI         := edWebUI.Value
@@ -608,6 +714,7 @@ MenuOpenSettings(*) {
         IniWrite(WebUI, SettingsFile, "Settings", "WebUI")
         IniWrite(String(StartupDelay), SettingsFile, "Settings", "StartupDelay")
         IniWrite(NetworkAutoPause ? "1" : "0", SettingsFile, "Settings", "NetworkAutoPause")
+        IniWrite(AutoCheckUpdates ? "1" : "0", SettingsFile, "Settings", "AutoCheckUpdates")
         ; Save discovery settings to Syncthing API
         if (ApiKey != "") {
             try {
