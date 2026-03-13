@@ -3,7 +3,7 @@
 Persistent
 
 ; ── Config ──────────────────────────────────────────────
-global Version      := "1.4.0"
+global Version      := "1.5.0"
 global SyncExe      := A_ScriptDir "\syncthing.exe"
 global WebUI        := "http://localhost:8384"
 global DblClickOpen := true
@@ -21,6 +21,9 @@ global g_knownDevices := Map()
 global g_devicesPollSeeded := false
 global g_lastConflictCount := 0
 global g_paused := false
+; v1.5.0: Device counter for tooltip
+global g_connectedCount := 0
+global g_totalDevices := 0
 
 ; ── Load Settings ───────────────────────────────────────
 if FileExist(SettingsFile) {
@@ -54,6 +57,14 @@ SetTimer(UpdateTrayIcon, 5000)
 SetTimer(PollSyncStatus, 10000)  ; P2-02: Poll sync status every 10s
 PollSyncStatus()                  ; Initial poll
 
+; v1.5.0: Middle-click tray icon toggles pause/resume
+OnMessage(0x404, OnTrayNotify)
+OnTrayNotify(wParam, lParam, msg, hwnd) {
+    event := lParam & 0xFFFF
+    if (event = 0x208)   ; WM_MBUTTONUP
+        TogglePause()
+}
+
 UpdateTrayIcon() {
     global g_intentionalStop, g_paused
     static lastState := -1
@@ -63,7 +74,8 @@ UpdateTrayIcon() {
     if (running != lastState || g_paused != lastPaused) {
         ; P4-01: Notify user if syncthing exited unexpectedly
         if (lastState != -1 && !running && !g_intentionalStop) {
-            TrayTip("Syncthing has stopped unexpectedly!", "SyncthingTray", 3)
+            ToolTip("Syncthing has stopped unexpectedly!")
+            SetTimer(() => ToolTip(), -5000)
             SoundBeep(300, 300)
         }
         g_intentionalStop := false
@@ -139,6 +151,7 @@ PollSyncStatus() {
             ; Detect pause state: check if any device is paused
             allPaused := true
             deviceCount := 0
+            connCount := 0
             ; Parse each device block — find deviceId + connected + paused
             pos := 1
             while (pos := RegExMatch(connBody, '"([A-Z0-9]{7}-[^"]+)"\s*:\s*\{', &dm, pos)) {
@@ -155,6 +168,8 @@ PollSyncStatus() {
                 if !paused
                     allPaused := false
                 deviceCount++
+                if connected
+                    connCount++
 
                 ; Alert on state change (skip first poll to avoid startup spam)
                 if g_devicesPollSeeded && g_knownDevices.Has(deviceId) {
@@ -171,6 +186,8 @@ PollSyncStatus() {
                 pos := blockStart
             }
             g_devicesPollSeeded := true
+            g_connectedCount := connCount
+            g_totalDevices := deviceCount
             ; Update pause state from API (sync with actual state)
             if (deviceCount > 0)
                 g_paused := allPaused
@@ -206,7 +223,7 @@ PollSyncStatus() {
 }
 
 UpdateTooltip() {
-    global Version, g_syncStatus, g_syncDetail
+    global Version, g_syncStatus, g_syncDetail, g_connectedCount, g_totalDevices
     tip := "SyncthingTray v" Version
     if (g_syncStatus = "paused")
         tip .= " — Paused"
@@ -220,6 +237,8 @@ UpdateTooltip() {
         tip .= " — Stopped"
     if (g_syncDetail != "")
         tip .= " (" g_syncDetail ")"
+    if (g_totalDevices > 0)
+        tip .= " | " g_connectedCount "/" g_totalDevices " devices"
     A_IconTip := tip
 }
 
@@ -302,7 +321,7 @@ MenuOpenSettings(*) {
     }
 
     sw := 320
-    sh := 276
+    sh := 300
 
     sg := Gui("+AlwaysOnTop -Resize +ToolWindow", "SyncthingTray Settings")
     sg.BackColor := "1E1E2E"
@@ -324,27 +343,30 @@ MenuOpenSettings(*) {
     cbBrowser := sg.Add("Checkbox", "x16 y100 w280 cCDD6F3", "Start browser when Syncthing launches")
     cbBrowser.Value := StartBrowser ? 1 : 0
 
-    ; API Key for graceful shutdown
-    sg.Add("Text", "x16 y126 w60 cA0A0C0", "API Key:")
-    edApiKey := sg.Add("Edit", "x80 y124 w220 h22 cCDD6F3 Background2A2A3E", ApiKey)
+    ; API Key
+    sg.Add("Text", "x16 y130 w60 cA0A0C0", "API Key:")
+    edApiKey := sg.Add("Edit", "x80 y128 w220 h22 cCDD6F3 Background2A2A3E", ApiKey)
     edApiKey.SetFont("s8", "Consolas")
 
     ; Divider
-    sg.Add("Text", "x0 y156 w" sw " h1 Background404050")
+    sg.Add("Text", "x0 y160 w" sw " h1 Background404050")
 
-    ; GitHub button
-    sg.SetFont("s9 cCDD6F3 norm", "Segoe UI")
-    sg.Add("Text", "x16 y168 w60 cA0A0C0", "GitHub:")
-    btnGH := sg.Add("Button", "x80 y164 w200 h22", "github.com/itsnateai/SyncthingTray")
-    btnGH.SetFont("s8", "Segoe UI")
-    btnGH.OnEvent("Click", (*) => Run("https://github.com/itsnateai/SyncthingTray"))
+    ; Link buttons row
+    sg.SetFont("s8 cCDD6F3 norm", "Segoe UI")
+    btnGH := sg.Add("Button", "x16 y170 w88 h24", "GitHub")
+    btnGH.OnEvent("Click", (*) => Run("https://github.com/itsnateai/synctray"))
+    btnST := sg.Add("Button", "x108 y170 w88 h24", "Syncthing")
+    btnST.OnEvent("Click", (*) => Run("https://github.com/syncthing/syncthing"))
+    btnHelp := sg.Add("Button", "x200 y170 w100 h24", "Help")
+    btnHelp.OnEvent("Click", (*) => ShowHelp())
 
     ; Divider
-    sg.Add("Text", "x0 y198 w" sw " h1 Background404050")
+    sg.Add("Text", "x0 y204 w" sw " h1 Background404050")
 
     ; Save / Cancel
-    btnSave   := sg.Add("Button", "x16 y210 w130 h30 Default", "Save")
-    btnCancel := sg.Add("Button", "x158 y210 w130 h30", "Cancel")
+    sg.SetFont("s9 cCDD6F3 norm", "Segoe UI")
+    btnSave   := sg.Add("Button", "x16 y216 w138 h30 Default", "Save")
+    btnCancel := sg.Add("Button", "x162 y216 w138 h30", "Cancel")
 
     btnSave.OnEvent("Click", SaveSettings)
     btnCancel.OnEvent("Click", (*) => sg.Destroy())
@@ -366,12 +388,23 @@ MenuOpenSettings(*) {
         try {
             ApplyStartup(RunOnStartup)
         } catch as e {
-            MsgBox("Could not update startup shortcut:`n" e.Message, "SyncthingTray", "Icon!")
+            ToolTip("Could not update startup shortcut: " e.Message)
+            SetTimer(() => ToolTip(), -5000)
         }
         BuildMenu()
         sg.Destroy()
-        TrayTip("Settings saved", "SyncthingTray")
+        ToolTip("Settings saved")
+        SetTimer(() => ToolTip(), -3000)
     }
+}
+
+; v1.5.0: Shared toggle logic for menu + middle-click
+TogglePause() {
+    global g_paused
+    if g_paused
+        MenuResume()
+    else
+        MenuPause()
 }
 
 MenuPause(*) {
@@ -428,7 +461,8 @@ MenuStart(*) {
     }
     UpdateTrayIcon()
     BuildMenu()
-    TrayTip("Syncthing started", "SyncthingTray")
+    ToolTip("Syncthing started")
+    SetTimer(() => ToolTip(), -3000)
 }
 
 MenuStop(*) {
@@ -438,9 +472,11 @@ MenuStop(*) {
         StopSyncthing()
         UpdateTrayIcon()
         BuildMenu()
-        TrayTip("Syncthing stopped", "SyncthingTray")
+        ToolTip("Syncthing stopped")
+        SetTimer(() => ToolTip(), -3000)
     } else {
-        TrayTip("Syncthing is not running", "SyncthingTray")
+        ToolTip("Syncthing is not running")
+        SetTimer(() => ToolTip(), -3000)
     }
 }
 
@@ -481,7 +517,8 @@ MenuRestart(*) {
     try Run(SyncExe (StartBrowser ? "" : " --no-browser"), A_ScriptDir, "Hide")
     UpdateTrayIcon()
     BuildMenu()
-    TrayTip("Syncthing restarted", "SyncthingTray")
+    ToolTip("Syncthing restarted")
+    SetTimer(() => ToolTip(), -3000)
 }
 
 MenuExit(*) {
@@ -489,4 +526,49 @@ MenuExit(*) {
     g_intentionalStop := true
     StopSyncthing()
     ExitApp()
+}
+
+; ── Help Window ──────────────────────────────────────────
+ShowHelp() {
+    if WinExist("SyncthingTray Help") {
+        WinActivate("SyncthingTray Help")
+        return
+    }
+    hg := Gui("+AlwaysOnTop -Resize +ToolWindow", "SyncthingTray Help")
+    hg.BackColor := "1E1E2E"
+    hg.SetFont("s10 cCDD6F3 bold", "Segoe UI")
+    hg.Add("Text", "x16 y14 w360", "SyncthingTray v" Version)
+    hg.Add("Text", "x0 y36 w400 h1 Background404050")
+
+    hg.SetFont("s9 cCDD6F3 norm", "Segoe UI")
+    helpText := ""
+        . "Tray Icon Actions:`n"
+        . "  Double-click — Open Syncthing Web UI`n"
+        . "  Middle-click — Toggle pause/resume syncing`n"
+        . "  Right-click — Open menu`n"
+        . "`n"
+        . "Settings:`n"
+        . "  API Key — Required for pause/resume, status polling,`n"
+        . "    and graceful shutdown. Find in Syncthing Web UI`n"
+        . "    under Actions > Settings > API Key.`n"
+        . "`n"
+        . "Status Icons:`n"
+        . "  Sync icon — Syncthing is running and syncing`n"
+        . "  Pause icon — Syncthing is paused or stopped`n"
+        . "`n"
+        . "Tooltip shows: status, sync progress, and`n"
+        . "connected device count (e.g. 2/3 devices).`n"
+        . "`n"
+        . "Syncthing docs: docs.syncthing.net"
+
+    hg.Add("Text", "x16 y46 w360 h280 cCDD6F3", helpText)
+
+    btnDocs := hg.Add("Button", "x16 y336 w120 h26", "Syncthing Docs")
+    btnDocs.SetFont("s8", "Segoe UI")
+    btnDocs.OnEvent("Click", (*) => Run("https://docs.syncthing.net"))
+    btnClose := hg.Add("Button", "x260 y336 w120 h26 Default", "Close")
+    btnClose.SetFont("s8", "Segoe UI")
+    btnClose.OnEvent("Click", (*) => hg.Destroy())
+    hg.OnEvent("Close", (*) => hg.Destroy())
+    hg.Show("w400 h380 Center")
 }
