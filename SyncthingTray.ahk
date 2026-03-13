@@ -3,7 +3,7 @@
 Persistent
 
 ; ── Config ──────────────────────────────────────────────
-global Version      := "1.3.0"
+global Version      := "1.4.0"
 global SyncExe      := A_ScriptDir "\syncthing.exe"
 global WebUI        := "http://localhost:8384"
 global DblClickOpen := true
@@ -16,6 +16,11 @@ global g_intentionalStop := false
 ; P2-02: Sync status indicator — "idle", "syncing", "error", or "unknown"
 global g_syncStatus := "unknown"
 global g_syncDetail := ""
+; v1.4.0: Device tracking, conflict detection, pause state
+global g_knownDevices := Map()
+global g_devicesPollSeeded := false
+global g_lastConflictCount := 0
+global g_paused := false
 
 ; ── Load Settings ───────────────────────────────────────
 if FileExist(SettingsFile) {
@@ -50,11 +55,12 @@ SetTimer(PollSyncStatus, 10000)  ; P2-02: Poll sync status every 10s
 PollSyncStatus()                  ; Initial poll
 
 UpdateTrayIcon() {
-    global g_intentionalStop
+    global g_intentionalStop, g_paused
     static lastState := -1
+    static lastPaused := -1
     running := ProcessExist("syncthing.exe")
-    ; Rebuild menu when state changes so Start/Stop label stays correct
-    if (running != lastState) {
+    ; Rebuild menu when state changes so Start/Stop/Pause label stays correct
+    if (running != lastState || g_paused != lastPaused) {
         ; P4-01: Notify user if syncthing exited unexpectedly
         if (lastState != -1 && !running && !g_intentionalStop) {
             TrayTip("Syncthing has stopped unexpectedly!", "SyncthingTray", 3)
@@ -62,9 +68,10 @@ UpdateTrayIcon() {
         }
         g_intentionalStop := false
         lastState := running
+        lastPaused := g_paused
         BuildMenu()
     }
-    if running {
+    if running && !g_paused {
         ico := A_ScriptDir "\sync.ico"
         if FileExist(ico)
             TraySetIcon(ico)
@@ -82,6 +89,7 @@ UpdateTrayIcon() {
 ; ── Sync Status Polling (P2-02) ────────────────────────
 PollSyncStatus() {
     global ApiKey, WebUI, g_syncStatus, g_syncDetail
+    global g_knownDevices, g_devicesPollSeeded, g_lastConflictCount, g_paused
     ; Only poll when syncthing is running and API key is configured
     if (!ProcessExist("syncthing.exe") || ApiKey = "") {
         g_syncStatus := (ProcessExist("syncthing.exe")) ? "unknown" : "stopped"
@@ -89,6 +97,8 @@ PollSyncStatus() {
         UpdateTooltip()
         return
     }
+
+    ; ── 1. Sync completion status ──
     try {
         whr := ComObject("WinHttp.WinHttpRequest.5.1")
         whr.Open("GET", WebUI "/rest/db/completion", false)
@@ -96,35 +106,111 @@ PollSyncStatus() {
         whr.Send()
         if (whr.Status = 200) {
             body := whr.ResponseText
-            ; Parse "completion" value from JSON — simple regex since AHK has no JSON lib
             if RegExMatch(body, '"completion"\s*:\s*([\d.]+)', &m) {
                 pct := Round(Number(m[1]), 1)
                 if (pct >= 100) {
-                    g_syncStatus := "idle"
-                    g_syncDetail := "Up to date"
+                    g_syncStatus := g_paused ? "paused" : "idle"
+                    g_syncDetail := g_paused ? "Paused" : "Up to date"
                 } else {
                     g_syncStatus := "syncing"
                     g_syncDetail := pct "% complete"
                 }
             } else {
-                g_syncStatus := "idle"
-                g_syncDetail := "Connected"
+                g_syncStatus := g_paused ? "paused" : "idle"
+                g_syncDetail := g_paused ? "Paused" : "Connected"
             }
         } else {
             g_syncStatus := "error"
             g_syncDetail := "API HTTP " whr.Status
         }
-    } catch as e {
+    } catch {
         g_syncStatus := "error"
         g_syncDetail := "API unreachable"
     }
+
+    ; ── 2. Device connect/disconnect tracking ──
+    try {
+        whr2 := ComObject("WinHttp.WinHttpRequest.5.1")
+        whr2.Open("GET", WebUI "/rest/system/connections", false)
+        whr2.SetRequestHeader("X-API-Key", ApiKey)
+        whr2.Send()
+        if (whr2.Status = 200) {
+            connBody := whr2.ResponseText
+            ; Detect pause state: check if any device is paused
+            allPaused := true
+            deviceCount := 0
+            ; Parse each device block — find deviceId + connected + paused
+            pos := 1
+            while (pos := RegExMatch(connBody, '"([A-Z0-9]{7}-[^"]+)"\s*:\s*\{', &dm, pos)) {
+                deviceId := dm[1]
+                ; Find the connected and paused fields within this device block
+                blockStart := dm.Pos + dm.Len
+                connected := false
+                paused := false
+                if RegExMatch(connBody, '"connected"\s*:\s*(true|false)', &cm, blockStart)
+                    connected := (cm[1] = "true")
+                if RegExMatch(connBody, '"paused"\s*:\s*(true|false)', &pm, blockStart)
+                    paused := (pm[1] = "true")
+
+                if !paused
+                    allPaused := false
+                deviceCount++
+
+                ; Alert on state change (skip first poll to avoid startup spam)
+                if g_devicesPollSeeded && g_knownDevices.Has(deviceId) {
+                    wasConnected := g_knownDevices[deviceId]
+                    if (connected && !wasConnected) {
+                        ToolTip("Device connected")
+                        SetTimer(() => ToolTip(), -3000)
+                    } else if (!connected && wasConnected) {
+                        ToolTip("Device disconnected")
+                        SetTimer(() => ToolTip(), -3000)
+                    }
+                }
+                g_knownDevices[deviceId] := connected
+                pos := blockStart
+            }
+            g_devicesPollSeeded := true
+            ; Update pause state from API (sync with actual state)
+            if (deviceCount > 0)
+                g_paused := allPaused
+        }
+    } catch {
+        ; Connection tracking is best-effort — don't fail the whole poll
+    }
+
+    ; ── 3. File conflict detection ──
+    try {
+        whr3 := ComObject("WinHttp.WinHttpRequest.5.1")
+        whr3.Open("GET", WebUI "/rest/db/status?folder=default", false)
+        whr3.SetRequestHeader("X-API-Key", ApiKey)
+        whr3.Send()
+        if (whr3.Status = 200) {
+            statusBody := whr3.ResponseText
+            if RegExMatch(statusBody, '"pullErrors"\s*:\s*(\d+)', &em) {
+                errCount := Number(em[1])
+                ; Only alert when count increases (avoid spam)
+                if (errCount > g_lastConflictCount && g_lastConflictCount >= 0) {
+                    newErrs := errCount - g_lastConflictCount
+                    ToolTip(newErrs " file error(s) detected — check Web UI")
+                    SetTimer(() => ToolTip(), -5000)
+                }
+                g_lastConflictCount := errCount
+            }
+        }
+    } catch {
+        ; Conflict check is best-effort
+    }
+
     UpdateTooltip()
 }
 
 UpdateTooltip() {
     global Version, g_syncStatus, g_syncDetail
     tip := "SyncthingTray v" Version
-    if (g_syncStatus = "idle")
+    if (g_syncStatus = "paused")
+        tip .= " — Paused"
+    else if (g_syncStatus = "idle")
         tip .= " — Idle"
     else if (g_syncStatus = "syncing")
         tip .= " — Syncing"
@@ -139,7 +225,7 @@ UpdateTooltip() {
 
 ; ── Build Tray Menu ─────────────────────────────────────
 BuildMenu() {
-    global DblClickOpen, RunOnStartup, WebUI, Version
+    global DblClickOpen, RunOnStartup, WebUI, Version, g_paused
 
     tray := A_TrayMenu
     tray.Delete()
@@ -157,12 +243,21 @@ BuildMenu() {
     tray.Add("Settings...", MenuOpenSettings)
     tray.Add()
 
-    ; Syncthing controls — label changes based on running state
+    ; Pause/Resume syncing (lightweight — keeps process running)
+    if ProcessExist("syncthing.exe") {
+        if g_paused
+            tray.Add("Resume Syncing", MenuResume)
+        else
+            tray.Add("Pause Syncing", MenuPause)
+        tray.Add()
+    }
+
+    ; Syncthing process controls
+    tray.Add("Restart Syncthing", MenuRestart)
     if ProcessExist("syncthing.exe")
         tray.Add("Stop Syncthing", MenuStop)
     else
         tray.Add("Start Syncthing", MenuStart)
-    tray.Add("Restart Syncthing", MenuRestart)
     tray.Add()
     tray.Add("Exit", MenuExit)
 
@@ -276,6 +371,52 @@ MenuOpenSettings(*) {
         BuildMenu()
         sg.Destroy()
         TrayTip("Settings saved", "SyncthingTray")
+    }
+}
+
+MenuPause(*) {
+    global ApiKey, WebUI, g_paused
+    if (ApiKey = "") {
+        ToolTip("API Key required for pause — set in Settings")
+        SetTimer(() => ToolTip(), -3000)
+        return
+    }
+    try {
+        whr := ComObject("WinHttp.WinHttpRequest.5.1")
+        whr.Open("POST", WebUI "/rest/system/pause", false)
+        whr.SetRequestHeader("X-API-Key", ApiKey)
+        whr.Send()
+        g_paused := true
+        UpdateTrayIcon()
+        BuildMenu()
+        ToolTip("Syncing paused")
+        SetTimer(() => ToolTip(), -3000)
+    } catch {
+        ToolTip("Failed to pause syncing")
+        SetTimer(() => ToolTip(), -3000)
+    }
+}
+
+MenuResume(*) {
+    global ApiKey, WebUI, g_paused
+    if (ApiKey = "") {
+        ToolTip("API Key required for resume — set in Settings")
+        SetTimer(() => ToolTip(), -3000)
+        return
+    }
+    try {
+        whr := ComObject("WinHttp.WinHttpRequest.5.1")
+        whr.Open("POST", WebUI "/rest/system/resume", false)
+        whr.SetRequestHeader("X-API-Key", ApiKey)
+        whr.Send()
+        g_paused := false
+        UpdateTrayIcon()
+        BuildMenu()
+        ToolTip("Syncing resumed")
+        SetTimer(() => ToolTip(), -3000)
+    } catch {
+        ToolTip("Failed to resume syncing")
+        SetTimer(() => ToolTip(), -3000)
     }
 }
 
