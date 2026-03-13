@@ -7,8 +7,7 @@
 
 ## Backlog
 
-### ADHOC-5: Single Instance Enforcement
-Ensure only one instance of SyncTray runs at a time. Detect and exit if already running.
+_(empty — all features shipped)_
 
 ---
 
@@ -16,6 +15,7 @@ Ensure only one instance of SyncTray runs at a time. Detect and exit if already 
 
 | # | Feature | Version |
 |---|---------|---------|
+| ADHOC-5 | Single Instance Enforcement | v1.0.0 |
 | 1 | Live Sync Status Tooltip | v1.2.0 |
 | 18 | Conflict Detection Alerts | v1.4.0 |
 | 19 | Device Connect/Disconnect Alerts | v1.4.0 |
