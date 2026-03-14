@@ -11,8 +11,9 @@ System tray manager for Syncthing on Windows. Launches syncthing.exe hidden, pro
 
 ## Build
 ```bash
-MSYS_NO_PATHCONV=1 "X:/_Projects/_tools/Ahk/Ahk2Exe.exe" /in SyncthingTray.ahk /out SyncthingTray.exe /compress 0 /silent
+MSYS_NO_PATHCONV=1 "X:/_Projects/_tools/Ahk/Ahk2Exe.exe" /in SyncthingTray.ahk /out SyncthingTray.exe /icon sync.ico /compress 0 /silent
 ```
+- Icons embedded via `@Ahk2Exe-AddResource` (sync.ico=10, pause.ico=11) — compiled .exe works standalone
 
 ## Architecture
 - Config section at top with globals
@@ -29,7 +30,7 @@ MSYS_NO_PATHCONV=1 "X:/_Projects/_tools/Ahk/Ahk2Exe.exe" /in SyncthingTray.ahk /
 ## Key Files
 - `SyncthingTray.ahk` — main script
 - `SyncthingTray.ini` — user settings (DblClickOpen, RunOnStartup, ApiKey, StartBrowser, SyncExe, WebUI, StartupDelay, NetworkAutoPause, AutoCheckUpdates)
-- `sync.ico` / `pause.ico` — tray icons (pause shown when syncing is paused via API)
+- `sync.ico` / `pause.ico` — tray icons (embedded in .exe; disk copies for source users running .ahk)
 - `syncthing.md` — feature backlog (approved features + done table)
 
 ## Conventions
