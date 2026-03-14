@@ -2,6 +2,10 @@
 #SingleInstance Force
 Persistent
 
+; ── Embed icons as PE resources so compiled .exe works standalone ────────────
+;@Ahk2Exe-AddResource sync.ico, 10
+;@Ahk2Exe-AddResource pause.ico, 11
+
 ; ── Config ──────────────────────────────────────────────
 global Version      := "1.5.0"
 global SyncExe      := A_ScriptDir "\syncthing.exe"
@@ -153,12 +157,16 @@ UpdateTrayIcon() {
         ico := A_ScriptDir "\sync.ico"
         if FileExist(ico)
             TraySetIcon(ico)
+        else if A_IsCompiled
+            TraySetIcon(A_ScriptFullPath, -10, true)
         else
             TraySetIcon("shell32.dll", 14)   ; sync/refresh fallback
     } else {
         ico := A_ScriptDir "\pause.ico"
         if FileExist(ico)
             TraySetIcon(ico)
+        else if A_IsCompiled
+            TraySetIcon(A_ScriptFullPath, -11, true)
         else
             TraySetIcon("shell32.dll", 28)   ; paused/stop fallback
     }
