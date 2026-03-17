@@ -7,7 +7,7 @@ Persistent
 ;@Ahk2Exe-AddResource pause.ico, 11
 
 ; ── Config ──────────────────────────────────────────────
-global Version      := "1.5.0"
+global Version      := "1.6.0"
 global SyncExe      := A_ScriptDir "\syncthing.exe"
 global WebUI        := "http://localhost:8384"
 global DblClickOpen := true
@@ -38,6 +38,10 @@ global g_lastNetworkCategory := -1
 global g_autoPaused := false
 ; v1.5.0: Auto-updater
 global AutoCheckUpdates := false
+; v1.6.0: Middle-click toggle setting
+global MiddleClickEnabled := true
+; v1.6.0: Overclick safeguard — shared cooldown across Start/Stop/Restart/Pause
+global g_lastActionTick := 0
 global g_lastUpdateCheck := 0
 global g_updateAvailable := ""
 global g_updateRunning := ""
@@ -67,6 +71,7 @@ if !g_firstRun {
             WebUI := v
         NetworkAutoPause := (IniRead(SettingsFile, "Settings", "NetworkAutoPause", "0") = "1")
         AutoCheckUpdates := (IniRead(SettingsFile, "Settings", "AutoCheckUpdates", "0") = "1")
+        MiddleClickEnabled := (IniRead(SettingsFile, "Settings", "MiddleClickEnabled", "1") = "1")
     }
 }
 
@@ -97,8 +102,9 @@ LoadFolders()
 ; v1.5.0: Middle-click tray icon toggles pause/resume
 OnMessage(0x404, OnTrayNotify)
 OnTrayNotify(wParam, lParam, msg, hwnd) {
+    global MiddleClickEnabled
     event := lParam & 0xFFFF
-    if (event = 0x208)   ; WM_MBUTTONUP
+    if (event = 0x208 && MiddleClickEnabled)   ; WM_MBUTTONUP
         TogglePause()
 }
 
@@ -133,6 +139,18 @@ ApiPatch(endpoint, body) {
     whr.SetRequestHeader("Content-Type", "application/json")
     whr.Send(body)
     return {status: whr.Status, body: whr.ResponseText}
+}
+
+; v1.6.0: Overclick safeguard — shared cooldown prevents rapid action desync
+IsOverclickGuarded(cooldownMs := 1500) {
+    global g_lastActionTick
+    if (A_TickCount - g_lastActionTick < cooldownMs) {
+        ToolTip("Please wait...")
+        SetTimer(() => ToolTip(), -1500)
+        return true
+    }
+    g_lastActionTick := A_TickCount
+    return false
 }
 
 UpdateTrayIcon() {
@@ -588,6 +606,10 @@ MenuOpenSettings(*) {
     cbBrowser.Value := StartBrowser ? 1 : 0
     y += 26
 
+    cbMidClick := sg.Add("Checkbox", "x16 y" y " w320 cCDD6F3", "Middle-click tray icon toggles pause/resume")
+    cbMidClick.Value := MiddleClickEnabled ? 1 : 0
+    y += 26
+
     cbNetPause := sg.Add("Checkbox", "x16 y" y " w320 cCDD6F3", "Auto-pause on public networks")
     cbNetPause.Value := NetworkAutoPause ? 1 : 0
     y += 26
@@ -704,10 +726,11 @@ MenuOpenSettings(*) {
 
     SaveSettings(*) {
         global DblClickOpen, RunOnStartup, StartBrowser, ApiKey
-        global SyncExe, WebUI, StartupDelay, NetworkAutoPause, AutoCheckUpdates
+        global SyncExe, WebUI, StartupDelay, NetworkAutoPause, AutoCheckUpdates, MiddleClickEnabled
         DblClickOpen  := cbDbl.Value = 1
         RunOnStartup  := g_isPortable ? false : (cbStart.Value = 1)
         StartBrowser  := cbBrowser.Value = 1
+        MiddleClickEnabled := cbMidClick.Value = 1
         NetworkAutoPause := cbNetPause.Value = 1
         AutoCheckUpdates := cbUpdates.Value = 1
         ApiKey        := edApiKey.Value
@@ -723,6 +746,7 @@ MenuOpenSettings(*) {
         IniWrite(String(StartupDelay), SettingsFile, "Settings", "StartupDelay")
         IniWrite(NetworkAutoPause ? "1" : "0", SettingsFile, "Settings", "NetworkAutoPause")
         IniWrite(AutoCheckUpdates ? "1" : "0", SettingsFile, "Settings", "AutoCheckUpdates")
+        IniWrite(MiddleClickEnabled ? "1" : "0", SettingsFile, "Settings", "MiddleClickEnabled")
         ; Save discovery settings to Syncthing API
         if (ApiKey != "") {
             try {
@@ -751,6 +775,8 @@ MenuOpenSettings(*) {
 ; v1.5.0: Shared toggle logic for menu + middle-click
 TogglePause() {
     global g_paused
+    if IsOverclickGuarded(800)
+        return
     if g_paused
         MenuResume()
     else
@@ -798,6 +824,8 @@ MenuResume(*) {
 }
 
 MenuStart(*) {
+    if IsOverclickGuarded()
+        return
     try Run(SyncExe (StartBrowser ? "" : " --no-browser"), A_ScriptDir, "Hide")
     catch {
         ToolTip("Could not launch syncthing.exe — check path in Settings")
@@ -812,6 +840,8 @@ MenuStart(*) {
 
 MenuStop(*) {
     global g_intentionalStop
+    if IsOverclickGuarded()
+        return
     if ProcessExist("syncthing.exe") {
         g_intentionalStop := true
         StopSyncthing()
@@ -851,6 +881,8 @@ StopSyncthing() {
 
 MenuRestart(*) {
     global g_intentionalStop
+    if IsOverclickGuarded()
+        return
     if ProcessExist("syncthing.exe") {
         g_intentionalStop := true
         StopSyncthing()
@@ -885,7 +917,7 @@ ShowHelp() {
     helpText := ""
         . "Tray Icon Actions:`n"
         . "  Double-click — Open Syncthing Web UI`n"
-        . "  Middle-click — Toggle pause/resume syncing`n"
+        . "  Middle-click — Toggle pause/resume (if enabled in Settings)`n"
         . "  Right-click — Open menu`n"
         . "`n"
         . "Settings:`n"

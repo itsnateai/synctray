@@ -11,7 +11,7 @@ System tray manager for Syncthing on Windows. Launches syncthing.exe hidden, pro
 
 ## Build
 ```bash
-MSYS_NO_PATHCONV=1 "X:/_Projects/_tools/Ahk/Ahk2Exe.exe" /in SyncthingTray.ahk /out SyncthingTray.exe /icon sync.ico /compress 0 /silent
+MSYS_NO_PATHCONV=1 "X:/_Projects/_.claude/_tools/Ahk/Ahk2Exe.exe" /in SyncthingTray.ahk /out SyncthingTray.exe /icon sync.ico /compress 0 /silent
 ```
 - Icons embedded via `@Ahk2Exe-AddResource` (sync.ico=10, pause.ico=11) — compiled .exe works standalone
 
@@ -41,11 +41,12 @@ MSYS_NO_PATHCONV=1 "X:/_Projects/_tools/Ahk/Ahk2Exe.exe" /in SyncthingTray.ahk /
 
 ## Status
 
-**v1.5.0 — Current release (2026-03-13)**
+**v1.6.0 — Current release (2026-03-17)**
 
 ## Changelog
 
 See git log for full history. Key releases:
+- v1.6.0 — Middle-click settings toggle, overclick safeguard (shared 1500ms cooldown on Start/Stop/Restart, 800ms on pause toggle)
 - v1.5.0 — 14 features: middle-click toggle, device counter, synced folders submenu, configurable paths, first-run wizard, startup delay, portable mode, discovery toggles, config check, network auto-pause, auto-updater, help window, GitHub buttons, ToolTip cleanup
 - v1.4.0 — Device alerts, conflict detection, pause/resume
 - v1.3.0 — Start Browser setting
