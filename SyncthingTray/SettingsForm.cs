@@ -343,7 +343,11 @@ internal sealed class SettingsForm : Form
         if (int.TryParse(_edDelay.Text, out int delay))
             _config.StartupDelay = delay;
 
-        _config.Save();
+        if (!_config.Save())
+        {
+            _osd.ShowMessage("Could not save settings \u2014 file may be locked", 5000);
+            return;
+        }
 
         // Save discovery settings via API
         if (!string.IsNullOrEmpty(_config.ApiKey))

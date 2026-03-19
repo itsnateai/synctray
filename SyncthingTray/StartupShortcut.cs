@@ -20,6 +20,7 @@ internal static class StartupShortcut
             var target = Environment.ProcessPath ?? "SyncthingTray.exe";
             var workDir = Path.GetDirectoryName(target) ?? string.Empty;
             object? shell = null;
+            object? shortcut = null;
             try
             {
                 var shellType = Type.GetTypeFromProgID("WScript.Shell");
@@ -27,7 +28,7 @@ internal static class StartupShortcut
                 shell = Activator.CreateInstance(shellType);
                 if (shell is null) return;
 
-                var shortcut = shellType.InvokeMember(
+                shortcut = shellType.InvokeMember(
                     "CreateShortcut",
                     System.Reflection.BindingFlags.InvokeMethod,
                     null, shell, [lnk]);
@@ -47,12 +48,11 @@ internal static class StartupShortcut
                 }
                 scType.InvokeMember("Save",
                     System.Reflection.BindingFlags.InvokeMethod, null, shortcut, null);
-
-                if (shortcut is not null)
-                    Marshal.ReleaseComObject(shortcut);
             }
             finally
             {
+                if (shortcut is not null)
+                    Marshal.ReleaseComObject(shortcut);
                 if (shell is not null)
                     Marshal.ReleaseComObject(shell);
             }

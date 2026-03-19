@@ -76,9 +76,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private FolderInfo[] _folders = [];
 
     private bool _disposed;
+    private bool _stopping;
 
     // Cached sync detail to avoid string allocation when percentage unchanged
     private double _lastPct = -1;
+
+    // PID of the syncthing process we launched (for targeted kill)
+    private int _launchedPid;
 
     public TrayApplicationContext()
     {
@@ -150,6 +154,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void StartAfterDelay()
     {
+        if (_disposed) return;
+
         if (!IsSyncthingRunning())
             LaunchSyncthing();
 
@@ -405,9 +411,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
 
         // 1. Sync completion
+        bool apiReachable = true;
         try
         {
             var (status, body) = _api.Get("/rest/db/completion");
+            if (status < 0) { apiReachable = false; }
             if (status == 200)
             {
                 using var doc = JsonDocument.Parse(body);
@@ -445,6 +453,14 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             _syncStatus = "error";
             _syncDetail = "API unreachable";
+            apiReachable = false;
+        }
+
+        // Fast-fail: skip remaining API calls if connection refused
+        if (!apiReachable)
+        {
+            UpdateTooltip();
+            return;
         }
 
         // 2. Device tracking
@@ -495,23 +511,31 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
         catch { /* best-effort */ }
 
-        // 3. Conflict detection
+        // 3. Conflict detection (check all known folders)
         try
         {
-            var (status3, body3) = _api.Get("/rest/db/status?folder=default");
-            if (status3 == 200)
+            int totalErrors = 0;
+            foreach (var folder in _folders)
             {
-                using var doc3 = JsonDocument.Parse(body3);
-                if (doc3.RootElement.TryGetProperty("pullErrors", out var peEl) && peEl.TryGetInt32(out int errCount))
+                try
                 {
-                    if (errCount > _lastConflictCount && _lastConflictCount >= 0)
+                    var (fs, fb) = _api.Get($"/rest/db/status?folder={Uri.EscapeDataString(folder.Id)}");
+                    if (fs == 200)
                     {
-                        int newErrs = errCount - _lastConflictCount;
-                        ShowOsd($"{newErrs} file error(s) detected \u2014 check Web UI", 5000);
+                        using var fd = JsonDocument.Parse(fb);
+                        if (fd.RootElement.TryGetProperty("pullErrors", out var peEl) && peEl.TryGetInt32(out int ec))
+                            totalErrors += ec;
                     }
-                    _lastConflictCount = errCount;
                 }
+                catch { /* per-folder best-effort */ }
             }
+
+            if (totalErrors > _lastConflictCount && _lastConflictCount >= 0)
+            {
+                int newErrs = totalErrors - _lastConflictCount;
+                ShowOsd($"{newErrs} file error(s) detected \u2014 check Web UI", 5000);
+            }
+            _lastConflictCount = totalErrors;
         }
         catch { /* best-effort */ }
 
@@ -718,6 +742,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private bool IsOverclickGuarded(int cooldownMs = 1500)
     {
+        if (_stopping) return true;
         long now = Environment.TickCount64;
         if (now - _lastActionTick < cooldownMs)
         {
@@ -746,7 +771,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
         try
         {
-            _api.Post("/rest/system/pause");
+            var (status, _) = _api.Post("/rest/system/pause");
+            if (status != 200)
+            {
+                ShowOsd($"Pause failed (HTTP {status})", 3000);
+                return;
+            }
             _paused = true;
             UpdateTrayIcon();
             BuildMenu();
@@ -767,7 +797,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
         try
         {
-            _api.Post("/rest/system/resume");
+            var (status, _) = _api.Post("/rest/system/resume");
+            if (status != 200)
+            {
+                ShowOsd($"Resume failed (HTTP {status})", 3000);
+                return;
+            }
             _paused = false;
             UpdateTrayIcon();
             BuildMenu();
@@ -812,6 +847,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private void MenuRescanAll()
     {
         if (IsOverclickGuarded(800)) return;
+        if (!IsSyncthingRunning())
+        {
+            ShowOsd("Syncthing is not running", 3000);
+            return;
+        }
         if (string.IsNullOrEmpty(_config.ApiKey))
         {
             ShowOsd("API Key required — set in Settings", 3000);
@@ -896,6 +936,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 ShowOsd("Failed to start syncthing process", 5000);
                 return false;
             }
+            _launchedPid = p.Id;
             p.Dispose();
             InvalidateRunningCache();
             return true;
@@ -908,6 +949,22 @@ internal sealed class TrayApplicationContext : ApplicationContext
     }
 
     private void StopSyncthing()
+    {
+        _stopping = true;
+        _iconTimer.Stop();
+        try
+        {
+            StopSyncthingCore();
+        }
+        finally
+        {
+            _stopping = false;
+            if (!_disposed)
+                _iconTimer.Start();
+        }
+    }
+
+    private void StopSyncthingCore()
     {
         // Graceful: REST API shutdown
         if (!string.IsNullOrEmpty(_config.ApiKey))
@@ -926,12 +983,26 @@ internal sealed class TrayApplicationContext : ApplicationContext
             catch { /* fall through to force kill */ }
         }
 
-        // Force kill fallback
-        foreach (var p in Process.GetProcessesByName("syncthing"))
+        // Force kill fallback — target our launched PID first
+        if (_launchedPid != 0)
         {
-            using (p)
+            try
             {
-                try { p.Kill(); } catch { /* already gone */ }
+                using var p = Process.GetProcessById(_launchedPid);
+                p.Kill();
+            }
+            catch { /* already gone or wrong PID */ }
+            _launchedPid = 0;
+        }
+        else
+        {
+            // No tracked PID — fall back to killing by name
+            foreach (var p in Process.GetProcessesByName("syncthing"))
+            {
+                using (p)
+                {
+                    try { p.Kill(); } catch { /* already gone */ }
+                }
             }
         }
 
@@ -1093,8 +1164,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             if (_wmTaskbarCreated != 0 && (uint)m.Msg == _wmTaskbarCreated)
             {
-                // Explorer restarted — re-show tray icon
+                // Explorer restarted — re-show tray icon and force icon re-assignment
                 _owner._trayIcon.Visible = true;
+                _owner._firstIconPoll = true;
                 _owner.UpdateTrayIcon();
             }
             base.WndProc(ref m);

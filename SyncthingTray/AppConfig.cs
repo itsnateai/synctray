@@ -117,7 +117,7 @@ internal sealed class AppConfig
             _configuredKeys.Add(key);
     }
 
-    public void Save()
+    public bool Save()
     {
         // When saving from the UI, all keys are explicitly configured
         MarkAllConfigured();
@@ -140,8 +140,12 @@ internal sealed class AppConfig
             var tmpPath = SettingsFilePath + ".tmp";
             File.WriteAllText(tmpPath, sb.ToString(), Utf8NoBom);
             File.Move(tmpPath, SettingsFilePath, overwrite: true);
+            return true;
         }
-        catch { /* file locked — silently fail */ }
+        catch
+        {
+            return false;
+        }
     }
 
     private static Dictionary<string, string> ParseIni(string[] lines)
