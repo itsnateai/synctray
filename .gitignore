@@ -11,6 +11,14 @@ Desktop.ini
 $RECYCLE.BIN/
 .DS_Store
 
+# C# / .NET
+bin/
+obj/
+*.user
+*.suo
+*.DotSettings.user
+publish/
+
 # IDE / Editor
 .vscode/
 .idea/

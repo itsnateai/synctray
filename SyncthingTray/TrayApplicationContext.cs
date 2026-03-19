@@ -78,27 +78,27 @@ internal sealed partial class TrayApplicationContext : ApplicationContext
     private static readonly Regex FolderLabelRegex = CreateFolderLabelRegex();
     private static readonly Regex FolderPathRegex = CreateFolderPathRegex();
 
-    [GeneratedRegex("\"completion\"\\s*:\\s*([\\d.]+)", RegexOptions.Compiled)]
+    [GeneratedRegex("\"completion\"\\s*:\\s*([\\d.]+)")]
     private static partial Regex CreateCompletionRegex();
-    [GeneratedRegex("\"([A-Z0-9]{7}-[^\"]+)\"\\s*:\\s*\\{", RegexOptions.Compiled)]
+    [GeneratedRegex("\"([A-Z0-9]{7}-[^\"]+)\"\\s*:\\s*\\{")]
     private static partial Regex CreateDeviceBlockRegex();
-    [GeneratedRegex("\"connected\"\\s*:\\s*(true|false)", RegexOptions.Compiled)]
+    [GeneratedRegex("\"connected\"\\s*:\\s*(true|false)")]
     private static partial Regex CreateConnectedRegex();
-    [GeneratedRegex("\"paused\"\\s*:\\s*(true|false)", RegexOptions.Compiled)]
+    [GeneratedRegex("\"paused\"\\s*:\\s*(true|false)")]
     private static partial Regex CreatePausedRegex();
-    [GeneratedRegex("\"pullErrors\"\\s*:\\s*(\\d+)", RegexOptions.Compiled)]
+    [GeneratedRegex("\"pullErrors\"\\s*:\\s*(\\d+)")]
     private static partial Regex CreatePullErrorsRegex();
-    [GeneratedRegex("\"newer\"\\s*:\\s*(true|false)", RegexOptions.Compiled)]
+    [GeneratedRegex("\"newer\"\\s*:\\s*(true|false)")]
     private static partial Regex CreateNewerRegex();
-    [GeneratedRegex("\"latest\"\\s*:\\s*\"([^\"]*)\"", RegexOptions.Compiled)]
+    [GeneratedRegex("\"latest\"\\s*:\\s*\"([^\"]*)\"")]
     private static partial Regex CreateLatestRegex();
-    [GeneratedRegex("\"running\"\\s*:\\s*\"([^\"]*)\"", RegexOptions.Compiled)]
+    [GeneratedRegex("\"running\"\\s*:\\s*\"([^\"]*)\"")]
     private static partial Regex CreateRunningVersionRegex();
-    [GeneratedRegex("\"id\"\\s*:\\s*\"([^\"]*)\"", RegexOptions.Compiled)]
+    [GeneratedRegex("\"id\"\\s*:\\s*\"([^\"]*)\"")]
     private static partial Regex CreateFolderIdRegex();
-    [GeneratedRegex("\"label\"\\s*:\\s*\"([^\"]*)\"", RegexOptions.Compiled)]
+    [GeneratedRegex("\"label\"\\s*:\\s*\"([^\"]*)\"")]
     private static partial Regex CreateFolderLabelRegex();
-    [GeneratedRegex("\"path\"\\s*:\\s*\"([^\"]*)\"", RegexOptions.Compiled)]
+    [GeneratedRegex("\"path\"\\s*:\\s*\"([^\"]*)\"")]
     private static partial Regex CreateFolderPathRegex();
 
     public TrayApplicationContext()
@@ -243,10 +243,12 @@ internal sealed partial class TrayApplicationContext : ApplicationContext
 
     // --- Menu Building ---
 
+    private static readonly DarkMenuRenderer DarkRenderer = new();
+
     private void BuildMenu()
     {
         var oldMenu = _trayIcon.ContextMenuStrip;
-        var menu = new ContextMenuStrip();
+        var menu = new ContextMenuStrip { Renderer = DarkRenderer };
         bool running = IsSyncthingRunning();
 
         // Title
@@ -315,6 +317,22 @@ internal sealed partial class TrayApplicationContext : ApplicationContext
     // --- Polling ---
 
     private void PollSyncStatus()
+    {
+        // Guard: stop the timer during polling so a slow cycle (cascading API
+        // timeouts up to 25s) can't stack with the next tick
+        _pollTimer.Stop();
+        try
+        {
+            PollSyncStatusCore();
+        }
+        finally
+        {
+            if (!_disposed)
+                _pollTimer.Start();
+        }
+    }
+
+    private void PollSyncStatusCore()
     {
         bool running = IsSyncthingRunning();
         if (!running || string.IsNullOrEmpty(_config.ApiKey))
