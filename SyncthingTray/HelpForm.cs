@@ -7,6 +7,9 @@ namespace SyncthingTray;
 /// </summary>
 internal sealed class HelpForm : Form
 {
+    private readonly Font _titleFont;
+    private readonly Font _bodyFont;
+    private readonly Font _btnFont;
     private bool _disposed;
 
     private static readonly Color BgColor = Color.FromArgb(0x1E, 0x1E, 0x2E);
@@ -15,6 +18,10 @@ internal sealed class HelpForm : Form
 
     public HelpForm()
     {
+        _titleFont = new Font("Segoe UI", 10f, FontStyle.Bold);
+        _bodyFont = new Font("Segoe UI", 9f);
+        _btnFont = new Font("Segoe UI", 8f);
+
         Text = "SyncthingTray Help";
         FormBorderStyle = FormBorderStyle.FixedToolWindow;
         StartPosition = FormStartPosition.CenterScreen;
@@ -22,15 +29,12 @@ internal sealed class HelpForm : Form
         ClientSize = new Size(400, 380);
         BackColor = BgColor;
         ShowInTaskbar = false;
-
-        var titleFont = new Font("Segoe UI", 10f, FontStyle.Bold);
-        var bodyFont = new Font("Segoe UI", 9f);
-        var btnFont = new Font("Segoe UI", 8f);
+        AutoScaleMode = AutoScaleMode.Dpi;
 
         var lblTitle = new Label
         {
             Text = $"SyncthingTray v{AppConfig.Version}",
-            Font = titleFont,
+            Font = _titleFont,
             ForeColor = FgColor,
             Location = new Point(16, 14),
             AutoSize = true,
@@ -47,8 +51,8 @@ internal sealed class HelpForm : Form
 
         const string helpText =
             "Tray Icon Actions:\r\n" +
-            "  Double-click \u2014 Open Syncthing Web UI\r\n" +
-            "  Middle-click \u2014 Toggle pause/resume (if enabled in Settings)\r\n" +
+            "  Double-click & Middle-click actions are configurable\r\n" +
+            "  in Settings (Web UI, Rescan, Pause/Resume, or None).\r\n" +
             "  Right-click \u2014 Open menu\r\n" +
             "\r\n" +
             "Settings:\r\n" +
@@ -68,7 +72,7 @@ internal sealed class HelpForm : Form
         var lblHelp = new Label
         {
             Text = helpText,
-            Font = bodyFont,
+            Font = _bodyFont,
             ForeColor = FgColor,
             Location = new Point(16, 46),
             Size = new Size(360, 280),
@@ -78,7 +82,7 @@ internal sealed class HelpForm : Form
         var btnDocs = new Button
         {
             Text = "Syncthing Docs",
-            Font = btnFont,
+            Font = _btnFont,
             Location = new Point(16, 336),
             Size = new Size(120, 26),
             FlatStyle = FlatStyle.Flat,
@@ -94,7 +98,7 @@ internal sealed class HelpForm : Form
         var btnClose = new Button
         {
             Text = "Close",
-            Font = btnFont,
+            Font = _btnFont,
             Location = new Point(260, 336),
             Size = new Size(120, 26),
             FlatStyle = FlatStyle.Flat,
@@ -107,9 +111,6 @@ internal sealed class HelpForm : Form
 
         CancelButton = btnClose;
         AcceptButton = btnClose;
-
-        // Store fonts for disposal
-        Tag = new Font[] { titleFont, bodyFont, btnFont };
     }
 
     protected override void Dispose(bool disposing)
@@ -117,10 +118,11 @@ internal sealed class HelpForm : Form
         if (!_disposed)
         {
             _disposed = true;
-            if (disposing && Tag is Font[] fonts)
+            if (disposing)
             {
-                foreach (var f in fonts)
-                    f.Dispose();
+                _titleFont.Dispose();
+                _bodyFont.Dispose();
+                _btnFont.Dispose();
             }
         }
         base.Dispose(disposing);

@@ -44,9 +44,20 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private bool _lastPausedState;
     private bool _firstIconPoll = true;
 
+    // Menu rebuild tracking — skip if state unchanged
+    private bool _lastMenuRunning;
+    private bool _lastMenuPaused;
+    private int _lastMenuFolderCount;
+    private string _lastMenuUpdate = string.Empty;
+    private bool _menuBuilt;
+
     // Cached per-cycle process check (avoid repeated Process.GetProcessesByName allocations)
     private bool _cachedRunning;
     private long _cachedRunningTick;
+
+    // Cached WMI network category (60s TTL — WMI is slow, network category rarely changes)
+    private int _cachedNetworkCategory = -1;
+    private long _cachedNetworkCategoryTick;
 
     // Pre-computed constant strings (avoid repeated interpolation)
     private static readonly string TitleString = $"SyncthingTray v{AppConfig.Version}";
@@ -127,6 +138,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
             };
             firstRunTimer.Start();
         }
+
+        // Notify if we replaced a previous instance
+        if (Program.KilledPreviousInstance)
+            ShowOsd("Replaced previous SyncthingTray instance", 3000);
     }
 
     private void StartAfterDelay()
@@ -240,9 +255,25 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void BuildMenu()
     {
+        bool running = IsSyncthingRunning();
+
+        // Skip rebuild if nothing that affects menu items has changed
+        if (_menuBuilt
+            && running == _lastMenuRunning
+            && _paused == _lastMenuPaused
+            && _folders.Length == _lastMenuFolderCount
+            && _updateAvailable == _lastMenuUpdate)
+        {
+            return;
+        }
+        _menuBuilt = true;
+        _lastMenuRunning = running;
+        _lastMenuPaused = _paused;
+        _lastMenuFolderCount = _folders.Length;
+        _lastMenuUpdate = _updateAvailable;
+
         var oldMenu = _trayIcon.ContextMenuStrip;
         var menu = new ContextMenuStrip { Renderer = DarkRenderer };
-        bool running = IsSyncthingRunning();
 
         // Title
         var titleItem = menu.Items.Add(TitleString);
@@ -873,10 +904,15 @@ internal sealed class TrayApplicationContext : ApplicationContext
         InvalidateRunningCache();
     }
 
-    // --- Network Category Detection (WMI) ---
+    // --- Network Category Detection (WMI, cached 60s) ---
 
-    private static int GetNetworkCategory()
+    private int GetNetworkCategory()
     {
+        long now = Environment.TickCount64;
+        if (now - _cachedNetworkCategoryTick < 60000)
+            return _cachedNetworkCategory;
+
+        _cachedNetworkCategoryTick = now;
         try
         {
             using var searcher = new ManagementObjectSearcher(
@@ -889,11 +925,15 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 {
                     var cat = profile["NetworkCategory"];
                     if (cat is not null)
-                        return Convert.ToInt32(cat);
+                    {
+                        _cachedNetworkCategory = Convert.ToInt32(cat);
+                        return _cachedNetworkCategory;
+                    }
                 }
             }
         }
         catch { /* WMI unavailable */ }
+        _cachedNetworkCategory = -1;
         return -1;
     }
 

@@ -64,8 +64,15 @@ internal sealed class OsdToolTip : Form
 
         Location = pos;
 
-        if (!Visible)
+        if (Visible)
+        {
+            Invalidate();
+            Update();
+        }
+        else
+        {
             Show();
+        }
 
         _hideTimer.Interval = durationMs;
         _hideTimer.Start();

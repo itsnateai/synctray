@@ -4,6 +4,8 @@ namespace SyncthingTray;
 
 internal static class Program
 {
+    internal static bool KilledPreviousInstance { get; private set; }
+
     [STAThread]
     static void Main()
     {
@@ -15,7 +17,7 @@ internal static class Program
             {
                 if (p.Id != Environment.ProcessId)
                 {
-                    try { p.Kill(); } catch { /* already exiting */ }
+                    try { p.Kill(); KilledPreviousInstance = true; } catch { /* already exiting */ }
                 }
             }
         }

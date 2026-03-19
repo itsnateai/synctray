@@ -61,6 +61,7 @@ internal sealed class SettingsForm : Form
         TopMost = true;
         BackColor = BgColor;
         ShowInTaskbar = false;
+        AutoScaleMode = AutoScaleMode.Dpi;
 
         int sw = 390;
         int y = 14;
