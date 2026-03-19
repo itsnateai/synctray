@@ -83,11 +83,11 @@ internal sealed class SettingsForm : Form
     {
         AddSectionHeader("Tray Click Actions", 16, ref y, sw);
 
-        AddLabel("Double-click:", 16, y + 2, 90, _normalFont, DimColor);
+        AddLabel("Double-click:", 16, y + 2, 0, _normalFont, DimColor);
         _cboDblClick = AddComboBox(112, y, 250, AppConfig.ClickActions, AppConfig.ActionValueToIndex(_config.DblClickAction));
         y += 30;
 
-        AddLabel("Middle-click:", 16, y + 2, 90, _normalFont, DimColor);
+        AddLabel("Middle-click:", 16, y + 2, 0, _normalFont, DimColor);
         _cboMiddleClick = AddComboBox(112, y, 250, AppConfig.ClickActions, AppConfig.ActionValueToIndex(_config.MiddleClickAction));
         y += 30;
     }
@@ -114,9 +114,9 @@ internal sealed class SettingsForm : Form
         _cbSoundNotify = AddCheckBox("Play sounds on events", 16, y, _config.SoundNotifications);
         y += 26;
 
-        AddLabel("Startup Delay:", 16, y, 90, _normalFont, DimColor);
+        AddLabel("Startup Delay:", 16, y, 0, _normalFont, DimColor);
         _edDelay = AddTextBox(110, y - 2, 50, _config.StartupDelay.ToString());
-        AddLabel("seconds", 166, y, 80, _normalFont, DimColor);
+        AddLabel("seconds", 166, y, 0, _normalFont, DimColor);
         y += 30;
     }
 
@@ -124,7 +124,7 @@ internal sealed class SettingsForm : Form
     {
         AddSectionHeader("Paths", 16, ref y, sw);
 
-        AddLabel("Syncthing:", 16, y, 70, _normalFont, DimColor);
+        AddLabel("Syncthing:", 16, y, 0, _normalFont, DimColor);
         _edSyncExe = AddTextBox(90, y - 2, 220, _config.SyncExe, true);
         var btnBrowse = new Button
         {
@@ -140,7 +140,7 @@ internal sealed class SettingsForm : Form
         Controls.Add(btnBrowse);
         y += 28;
 
-        AddLabel("Web UI:", 16, y, 70, _normalFont, DimColor);
+        AddLabel("Web UI:", 16, y, 0, _normalFont, DimColor);
         _edWebUI = AddTextBox(90, y - 2, 220, _config.WebUI, true);
         var btnOpenWebUI = new Button
         {
@@ -166,7 +166,7 @@ internal sealed class SettingsForm : Form
     {
         AddSectionHeader("API", 16, ref y, sw);
 
-        AddLabel("API Key:", 16, y, 70, _normalFont, DimColor);
+        AddLabel("API Key:", 16, y, 0, _normalFont, DimColor);
         _edApiKey = AddTextBox(90, y - 2, 272, _config.ApiKey, true);
         y += 30;
     }
@@ -203,7 +203,61 @@ internal sealed class SettingsForm : Form
     {
         AddSectionHeader("Updates", 16, ref y, sw);
 
-        _cbAutoUpdates = AddCheckBox("Check for Syncthing updates (daily)", 16, y, _config.AutoCheckUpdates);
+        _cbAutoUpdates = AddCheckBox("Check for updates (daily)", 16, y, _config.AutoCheckUpdates);
+        _cbAutoUpdates.Width = 220;
+        var btnCheckNow = new Button
+        {
+            Text = "Check Now",
+            Font = _btnFont,
+            Location = new Point(240, y - 2),
+            Size = new Size(90, 22),
+            FlatStyle = FlatStyle.Flat,
+            ForeColor = FgColor,
+            BackColor = BgColor,
+        };
+        btnCheckNow.Click += (_, _) =>
+        {
+            if (string.IsNullOrEmpty(_config.ApiKey))
+            {
+                _osd.ShowMessage("API Key required \u2014 set above", 3000);
+                return;
+            }
+            _osd.ShowMessage("Checking for updates...", 2000);
+            try
+            {
+                var (status, body) = _api.Get("/rest/system/upgrade");
+                if (status == 200)
+                {
+                    bool newer = ParseJsonBool(body, "newer", false);
+                    if (newer)
+                    {
+                        int idx = body.IndexOf("\"latest\"", StringComparison.Ordinal);
+                        string ver = "unknown";
+                        if (idx >= 0)
+                        {
+                            int q1 = body.IndexOf('"', idx + 10);
+                            int q2 = body.IndexOf('"', q1 + 1);
+                            if (q1 >= 0 && q2 > q1)
+                                ver = body[(q1 + 1)..q2];
+                        }
+                        _osd.ShowMessage($"Update available: {ver}", 5000);
+                    }
+                    else
+                    {
+                        _osd.ShowMessage("Syncthing is up to date", 3000);
+                    }
+                }
+                else
+                {
+                    _osd.ShowMessage($"Check failed (HTTP {status})", 3000);
+                }
+            }
+            catch
+            {
+                _osd.ShowMessage("Could not reach Syncthing API", 3000);
+            }
+        };
+        Controls.Add(btnCheckNow);
         y += 30;
 
         AddDivider(0, y, sw);
@@ -540,10 +594,11 @@ internal sealed class SettingsForm : Form
     private void AddSectionHeader(string text, int x, ref int y, int sw)
     {
         y += 4;
-        AddLabel(text, x, y, text.Length * 8 + 10, _sectionFont, DimColor);
-        int labelEnd = x + text.Length * 8 + 10;
-        AddDivider(labelEnd, y + 6, sw - labelEnd - 10);
-        y += 22;
+        var lbl = AddLabel(text, x, y, 0, _sectionFont, DimColor); // AutoSize
+        int labelWidth = TextRenderer.MeasureText(text, _sectionFont).Width;
+        int labelEnd = x + labelWidth + 4;
+        AddDivider(labelEnd, y + 7, sw - labelEnd - 10);
+        y += 20;
     }
 
     private void AddLinkButton(string text, int x, int y, int w, string url)

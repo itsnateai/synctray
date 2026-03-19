@@ -51,21 +51,25 @@ internal sealed class HelpForm : Form
 
         const string helpText =
             "Tray Icon Actions:\r\n" +
-            "  Double-click & Middle-click actions are configurable\r\n" +
-            "  in Settings (Web UI, Rescan, Pause/Resume, or None).\r\n" +
-            "  Right-click \u2014 Open menu\r\n" +
+            "  Double-click & Middle-click \u2014 configurable in Settings\r\n" +
+            "    (Open Web UI, Force Rescan, Pause/Resume, or None)\r\n" +
+            "  Right-click \u2014 Open context menu\r\n" +
+            "\r\n" +
+            "Context Menu:\r\n" +
+            "  Synced Folders \u2014 browse synced folder list\r\n" +
+            "  Force Rescan Now \u2014 trigger rescan on all folders\r\n" +
+            "  Pause/Resume \u2014 toggle syncing on/off\r\n" +
+            "  Start/Stop/Restart \u2014 control Syncthing process\r\n" +
             "\r\n" +
             "Settings:\r\n" +
-            "  API Key \u2014 Required for pause/resume, status polling,\r\n" +
-            "    and graceful shutdown. Find in Syncthing Web UI\r\n" +
+            "  API Key \u2014 required for status, pause/resume, and\r\n" +
+            "    discovery settings. Find in Syncthing Web UI\r\n" +
             "    under Actions > Settings > API Key.\r\n" +
+            "  Check Config \u2014 validate settings against Syncthing\r\n" +
             "\r\n" +
-            "Status Icons:\r\n" +
-            "  Sync icon \u2014 Syncthing is running and syncing\r\n" +
-            "  Pause icon \u2014 Syncthing is paused or stopped\r\n" +
-            "\r\n" +
-            "Tooltip shows: status, sync progress, and\r\n" +
-            "connected device count (e.g. 2/3 devices).\r\n" +
+            "Status:\r\n" +
+            "  Tray tooltip shows sync state, progress, and\r\n" +
+            "  connected device count (e.g. 1/2 devices).\r\n" +
             "\r\n" +
             "Syncthing docs: docs.syncthing.net";
 

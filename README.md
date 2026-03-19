@@ -2,6 +2,12 @@
 
 A lightweight system tray manager for [Syncthing](https://syncthing.net/) on Windows, built with C# (.NET 8 WinForms).
 
+## Screenshots
+
+| Tray Menu | Settings | Taskbar |
+|:---------:|:--------:|:-------:|
+| ![Menu](screenshots/synctraymenu.png) | ![Settings](screenshots/synctraysettings.png) | ![Taskbar](screenshots/synctraytaskbaricon.png) |
+
 ## Features
 
 - Launches Syncthing hidden (no console window)
@@ -35,7 +41,9 @@ Grab the latest from the [Releases](https://github.com/itsnateai/synctray/releas
 ## Requirements
 
 - Windows 10/11
-- [Syncthing](https://github.com/syncthing/syncthing/releases) — download `syncthing-windows-amd64-*.zip` and place `syncthing.exe` in the same folder as `SyncthingTray.exe`
+- [Syncthing](https://github.com/syncthing/syncthing/releases) — download `syncthing-windows-amd64-*.zip` and extract `syncthing.exe`
+
+> **Note:** This is a lightweight alternative to [Syncthing Tray](https://github.com/Martchus/syncthingtray) (Qt-based, ~80 MB). SyncthingTray focuses on simplicity — just tray management, no built-in file browser or embedded web view.
 
 ## Setup
 
@@ -48,7 +56,7 @@ Grab the latest from the [Releases](https://github.com/itsnateai/synctray/releas
 
 Right-click the tray icon and select **Settings** to configure:
 
-- **Double-click action** — configurable: Open Web UI, Rescan, Pause/Resume, or Do Nothing
+- **Double-click action** — configurable: Open Web UI, Force Rescan, Pause/Resume, or Do Nothing
 - **Middle-click action** — configurable: same options as double-click
 - **Run on startup** — creates/removes a Windows Startup shortcut
 - **Start browser** — open the Web UI when Syncthing launches

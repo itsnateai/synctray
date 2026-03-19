@@ -243,7 +243,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         var statusSuffix = _syncStatus switch
         {
             "paused" => " \u2014 Paused",
-            "idle" => " \u2014 Idle",
+            "idle" => " \u2014 Online",
             "syncing" => " \u2014 Syncing",
             "error" => " \u2014 Error",
             "stopped" => " \u2014 Stopped",
@@ -251,12 +251,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
         };
 
         var tip = _syncDetail.Length > 0
-            ? (_totalDevices > 0
-                ? string.Concat(TitleString, statusSuffix, " (", _syncDetail, ") | ", _connectedCount.ToString(), "/", _totalDevices.ToString(), " devices")
-                : string.Concat(TitleString, statusSuffix, " (", _syncDetail, ")"))
-            : (_totalDevices > 0
-                ? string.Concat(TitleString, statusSuffix, " | ", _connectedCount.ToString(), "/", _totalDevices.ToString(), " devices")
-                : string.Concat(TitleString, statusSuffix));
+            ? string.Concat(TitleString, statusSuffix, " (", _syncDetail, ")")
+            : string.Concat(TitleString, statusSuffix);
 
         // NotifyIcon.Text max is 127 chars
         _trayIcon.Text = tip.Length > 127 ? tip[..127] : tip;
@@ -296,28 +292,24 @@ internal sealed class TrayApplicationContext : ApplicationContext
         var oldMenu = _trayIcon.ContextMenuStrip;
         var menu = new ContextMenuStrip { Renderer = DarkRenderer };
 
-        // Title + status line
+        // Title
         var titleItem = menu.Items.Add(TitleString);
         titleItem.Enabled = false;
+        menu.Items.Add(new ToolStripSeparator());
 
+        // Status + WebUI link
         var statusText = running
             ? _syncStatus switch
             {
                 "paused" => "Paused",
-                "idle" => _syncDetail.Length > 0 ? $"Idle — {_syncDetail}" : "Idle",
+                "idle" => _syncDetail.Length > 0 ? $"Online — {_syncDetail}" : "Online",
                 "syncing" => _syncDetail.Length > 0 ? $"Syncing — {_syncDetail}" : "Syncing...",
                 "error" => _syncDetail.Length > 0 ? $"Error — {_syncDetail}" : "Error",
                 _ => "Running",
             }
             : "Stopped";
-        if (running && _totalDevices > 0)
-            statusText += $" | {_connectedCount}/{_totalDevices} devices";
-
-        var statusItem = menu.Items.Add($"  {statusText}");
+        var statusItem = menu.Items.Add($"Syncthing: {statusText}");
         statusItem.Enabled = false;
-        menu.Items.Add(new ToolStripSeparator());
-
-        // WebUI link
         menu.Items.Add(_config.WebUI, null, (_, _) => OpenWebUI());
 
         // Synced Folders submenu
@@ -340,7 +332,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         // Rescan Now
         if (running && !string.IsNullOrEmpty(_config.ApiKey))
-            menu.Items.Add("Rescan Now", null, (_, _) => MenuRescanAll());
+            menu.Items.Add("Force Rescan Now", null, (_, _) => MenuRescanAll());
 
         menu.Items.Add(new ToolStripSeparator());
 
@@ -365,14 +357,6 @@ internal sealed class TrayApplicationContext : ApplicationContext
         else
             menu.Items.Add("Start Syncthing", null, (_, _) => MenuStart());
 
-        // Update check
-        if (running)
-        {
-            var label = _updateAvailable.Length > 0
-                ? $"Update Available: {_updateAvailable}"
-                : "Check for Updates";
-            menu.Items.Add(label, null, (_, _) => MenuCheckUpdate());
-        }
         menu.Items.Add(new ToolStripSeparator());
 
         // Exit
@@ -428,7 +412,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
                     if (pct >= 100)
                     {
                         _syncStatus = _paused ? "paused" : "idle";
-                        _syncDetail = _paused ? "Paused" : "Up to date";
+                        _syncDetail = _paused ? "Paused" : "";
                     }
                     else
                     {

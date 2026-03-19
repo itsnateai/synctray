@@ -22,6 +22,8 @@ internal sealed class OsdToolTip : Form
         TopMost = true;
         BackColor = BgColor;
         AutoSize = false;
+        Opacity = 0.95;
+        Padding = new Padding(1);
 
         _labelFont = new Font("Segoe UI", 9f);
         _label = new Label
@@ -37,6 +39,13 @@ internal sealed class OsdToolTip : Form
 
         _hideTimer = new System.Windows.Forms.Timer { Interval = 3000 };
         _hideTimer.Tick += (_, _) => HideOsd();
+
+        // Pre-warm the window handle off-screen so first ShowMessage doesn't flicker
+        Location = new Point(-9999, -9999);
+        _label.Text = " ";
+        Size = new Size(1, 1);
+        Show();
+        Hide();
     }
 
     public void ShowMessage(string text, int durationMs = 3000)
@@ -99,6 +108,13 @@ internal sealed class OsdToolTip : Form
             }
         }
         base.Dispose(disposing);
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e);
+        using var pen = new Pen(Color.FromArgb(0x44, 0x44, 0x5A), 1);
+        e.Graphics.DrawRectangle(pen, 0, 0, Width - 1, Height - 1);
     }
 
     protected override CreateParams CreateParams
