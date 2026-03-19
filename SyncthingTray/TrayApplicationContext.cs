@@ -43,12 +43,27 @@ internal sealed partial class TrayApplicationContext : ApplicationContext
     private bool _lastRunningState;
     private bool _lastPausedState;
     private bool _firstIconPoll = true;
-    private string _lastTooltipText = string.Empty;
+
+    // Cached per-cycle process check (avoid repeated Process.GetProcessesByName allocations)
+    private bool _cachedRunning;
+    private long _cachedRunningTick;
+
+    // Pre-computed constant strings (avoid repeated interpolation)
+    private static readonly string TitleString = $"SyncthingTray v{AppConfig.Version}";
+
+    // Cached tooltip state — only rebuild string when components change
+    private string _lastTipStatus = string.Empty;
+    private string _lastTipDetail = string.Empty;
+    private int _lastTipConnected = -1;
+    private int _lastTipTotal = -1;
 
     // Folder cache
     private FolderInfo[] _folders = [];
 
     private bool _disposed;
+
+    // Cached sync detail to avoid string allocation when percentage unchanged
+    private double _lastPct = -1;
 
     // Compiled regex for JSON parsing (zero-allocation on hot path — compiled once)
     private static readonly Regex CompletionRegex = CreateCompletionRegex();
@@ -101,7 +116,7 @@ internal sealed partial class TrayApplicationContext : ApplicationContext
         _trayIcon = new NotifyIcon
         {
             Icon = _syncIcon,
-            Text = $"SyncthingTray v{AppConfig.Version}",
+            Text = TitleString,
             Visible = true,
         };
         _trayIcon.DoubleClick += OnTrayDoubleClick;
@@ -190,9 +205,21 @@ internal sealed partial class TrayApplicationContext : ApplicationContext
 
     private void UpdateTooltip()
     {
-        var tip = $"SyncthingTray v{AppConfig.Version}";
+        // Early exit: skip all string work if none of the tooltip components changed
+        if (_syncStatus == _lastTipStatus
+            && _syncDetail == _lastTipDetail
+            && _connectedCount == _lastTipConnected
+            && _totalDevices == _lastTipTotal)
+        {
+            return;
+        }
 
-        tip += _syncStatus switch
+        _lastTipStatus = _syncStatus;
+        _lastTipDetail = _syncDetail;
+        _lastTipConnected = _connectedCount;
+        _lastTipTotal = _totalDevices;
+
+        var statusSuffix = _syncStatus switch
         {
             "paused" => " \u2014 Paused",
             "idle" => " \u2014 Idle",
@@ -202,19 +229,16 @@ internal sealed partial class TrayApplicationContext : ApplicationContext
             _ => string.Empty,
         };
 
-        if (_syncDetail.Length > 0)
-            tip += $" ({_syncDetail})";
+        var tip = _syncDetail.Length > 0
+            ? (_totalDevices > 0
+                ? string.Concat(TitleString, statusSuffix, " (", _syncDetail, ") | ", _connectedCount.ToString(), "/", _totalDevices.ToString(), " devices")
+                : string.Concat(TitleString, statusSuffix, " (", _syncDetail, ")"))
+            : (_totalDevices > 0
+                ? string.Concat(TitleString, statusSuffix, " | ", _connectedCount.ToString(), "/", _totalDevices.ToString(), " devices")
+                : string.Concat(TitleString, statusSuffix));
 
-        if (_totalDevices > 0)
-            tip += $" | {_connectedCount}/{_totalDevices} devices";
-
-        // Only update if changed (avoid flicker)
-        if (tip != _lastTooltipText)
-        {
-            // NotifyIcon.Text max is 127 chars
-            _trayIcon.Text = tip.Length > 127 ? tip[..127] : tip;
-            _lastTooltipText = tip;
-        }
+        // NotifyIcon.Text max is 127 chars
+        _trayIcon.Text = tip.Length > 127 ? tip[..127] : tip;
     }
 
     // --- Menu Building ---
@@ -226,7 +250,7 @@ internal sealed partial class TrayApplicationContext : ApplicationContext
         bool running = IsSyncthingRunning();
 
         // Title
-        var titleItem = menu.Items.Add($"SyncthingTray v{AppConfig.Version}");
+        var titleItem = menu.Items.Add(TitleString);
         titleItem.Enabled = false;
         menu.Items.Add(new ToolStripSeparator());
 
@@ -320,7 +344,12 @@ internal sealed partial class TrayApplicationContext : ApplicationContext
                     else
                     {
                         _syncStatus = "syncing";
-                        _syncDetail = $"{pct}% complete";
+                        // Only allocate a new string when pct actually changed
+                        if (pct != _lastPct)
+                        {
+                            _lastPct = pct;
+                            _syncDetail = string.Concat(pct.ToString(System.Globalization.CultureInfo.InvariantCulture), "% complete");
+                        }
                     }
                 }
                 else
@@ -751,6 +780,7 @@ internal sealed partial class TrayApplicationContext : ApplicationContext
                 CreateNoWindow = true,
             };
             using var p = Process.Start(psi);
+            InvalidateRunningCache();
             return true;
         }
         catch
@@ -769,6 +799,7 @@ internal sealed partial class TrayApplicationContext : ApplicationContext
                 _api.Post("/rest/system/shutdown");
                 for (int i = 0; i < 50; i++)
                 {
+                    InvalidateRunningCache();
                     if (!IsSyncthingRunning()) return;
                     Thread.Sleep(100);
                 }
@@ -787,9 +818,11 @@ internal sealed partial class TrayApplicationContext : ApplicationContext
 
         for (int i = 0; i < 30; i++)
         {
+            InvalidateRunningCache();
             if (!IsSyncthingRunning()) break;
             Thread.Sleep(100);
         }
+        InvalidateRunningCache();
     }
 
     // --- Network Category Detection (WMI) ---
@@ -818,8 +851,17 @@ internal sealed partial class TrayApplicationContext : ApplicationContext
 
     // --- Helpers ---
 
-    private static bool IsSyncthingRunning()
+    /// <summary>
+    /// Checks if syncthing.exe is running. Result is cached for 2 seconds to avoid
+    /// repeated Process.GetProcessesByName allocations within the same poll cycle
+    /// (UpdateTrayIcon, PollSyncStatus, and BuildMenu can all call this in sequence).
+    /// </summary>
+    private bool IsSyncthingRunning()
     {
+        long now = Environment.TickCount64;
+        if (now - _cachedRunningTick < 2000)
+            return _cachedRunning;
+
         var procs = Process.GetProcessesByName("syncthing");
         bool running = false;
         foreach (var p in procs)
@@ -829,7 +871,18 @@ internal sealed partial class TrayApplicationContext : ApplicationContext
                 running = true;
             }
         }
+        _cachedRunning = running;
+        _cachedRunningTick = now;
         return running;
+    }
+
+    /// <summary>
+    /// Invalidates the cached process check so the next call does a fresh lookup.
+    /// Call after starting or stopping syncthing so state is immediately correct.
+    /// </summary>
+    private void InvalidateRunningCache()
+    {
+        _cachedRunningTick = 0;
     }
 
     private void ShowOsd(string text, int durationMs)
