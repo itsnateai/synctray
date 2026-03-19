@@ -8,7 +8,7 @@ namespace SyncthingTray;
 /// Main application context — manages the system tray icon, context menu,
 /// polling timer, and all syncthing lifecycle operations.
 /// </summary>
-internal sealed partial class TrayApplicationContext : ApplicationContext, IDisposable
+internal sealed partial class TrayApplicationContext : ApplicationContext
 {
     private readonly AppConfig _config;
     private readonly SyncthingApi _api;
@@ -284,22 +284,8 @@ internal sealed partial class TrayApplicationContext : ApplicationContext, IDisp
 
         _trayIcon.ContextMenuStrip = menu;
 
-        // Dispose old menu
-        if (oldMenu is not null)
-        {
-            foreach (ToolStripItem item in oldMenu.Items)
-            {
-                if (item is ToolStripMenuItem mi)
-                {
-                    // Dispose submenu items
-                    foreach (ToolStripItem sub in mi.DropDownItems)
-                        sub.Dispose();
-                    mi.DropDownItems.Clear();
-                }
-            }
-            oldMenu.Items.Clear();
-            oldMenu.Dispose();
-        }
+        // Dispose old menu — Dispose() cascades to all owned items and submenus
+        oldMenu?.Dispose();
     }
 
     // --- Polling ---
@@ -858,8 +844,12 @@ internal sealed partial class TrayApplicationContext : ApplicationContext, IDisp
     {
         var stream = typeof(TrayApplicationContext).Assembly.GetManifestResourceStream(name);
         if (stream is not null)
-            return new Icon(stream);
-        return SystemIcons.Application;
+        {
+            using (stream)
+                return new Icon(stream);
+        }
+        // Clone the shared system icon so we can safely dispose it later
+        return (Icon)SystemIcons.Application.Clone();
     }
 
     private void ExitApplication()
