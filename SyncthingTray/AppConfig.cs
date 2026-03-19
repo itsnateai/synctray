@@ -7,7 +7,7 @@ namespace SyncthingTray;
 /// </summary>
 internal sealed class AppConfig
 {
-    public const string Version = "2.0.0";
+    public const string Version = "2.1.0";
 
     // Click action values: "webui", "rescan", "pause", "none"
     public static readonly string[] ClickActions = ["Open Web UI", "Rescan Now", "Pause/Resume", "Do Nothing"];

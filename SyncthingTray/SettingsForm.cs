@@ -62,7 +62,7 @@ internal sealed class SettingsForm : Form
         BackColor = BgColor;
         ShowInTaskbar = false;
 
-        int sw = 360;
+        int sw = 390;
         int y = 14;
 
         // Title
@@ -75,11 +75,11 @@ internal sealed class SettingsForm : Form
         AddSectionHeader("Tray Click Actions", 16, ref y, sw);
 
         AddLabel("Double-click:", 16, y, 90, _normalFont, DimColor);
-        _cboDblClick = AddComboBox(110, y - 2, 220, AppConfig.ClickActions, AppConfig.ActionValueToIndex(config.DblClickAction));
+        _cboDblClick = AddComboBox(112, y - 2, 250, AppConfig.ClickActions, AppConfig.ActionValueToIndex(config.DblClickAction));
         y += 28;
 
         AddLabel("Middle-click:", 16, y, 90, _normalFont, DimColor);
-        _cboMiddleClick = AddComboBox(110, y - 2, 220, AppConfig.ClickActions, AppConfig.ActionValueToIndex(config.MiddleClickAction));
+        _cboMiddleClick = AddComboBox(112, y - 2, 250, AppConfig.ClickActions, AppConfig.ActionValueToIndex(config.MiddleClickAction));
         y += 30;
 
         // General
@@ -108,13 +108,13 @@ internal sealed class SettingsForm : Form
         // Paths section
         AddSectionHeader("Paths", 16, ref y, sw);
 
-        AddLabel("Syncthing:", 16, y, 90, _normalFont, DimColor);
-        _edSyncExe = AddTextBox(80, y - 2, 210, config.SyncExe, true);
+        AddLabel("Syncthing:", 16, y, 70, _normalFont, DimColor);
+        _edSyncExe = AddTextBox(90, y - 2, 220, config.SyncExe, true);
         var btnBrowse = new Button
         {
             Text = "...",
             Font = _btnFont,
-            Location = new Point(294, y - 3),
+            Location = new Point(314, y - 3),
             Size = new Size(50, 24),
             FlatStyle = FlatStyle.Flat,
             ForeColor = FgColor,
@@ -124,15 +124,15 @@ internal sealed class SettingsForm : Form
         Controls.Add(btnBrowse);
         y += 28;
 
-        AddLabel("Web UI:", 16, y, 90, _normalFont, DimColor);
-        _edWebUI = AddTextBox(80, y - 2, 210, config.WebUI, true);
+        AddLabel("Web UI:", 16, y, 70, _normalFont, DimColor);
+        _edWebUI = AddTextBox(90, y - 2, 270, config.WebUI, true);
         y += 30;
 
         // API section
         AddSectionHeader("API", 16, ref y, sw);
 
-        AddLabel("API Key:", 16, y, 60, _normalFont, DimColor);
-        _edApiKey = AddTextBox(80, y - 2, 260, config.ApiKey, true);
+        AddLabel("API Key:", 16, y, 70, _normalFont, DimColor);
+        _edApiKey = AddTextBox(90, y - 2, 272, config.ApiKey, true);
         y += 30;
 
         // Discovery section
@@ -197,8 +197,8 @@ internal sealed class SettingsForm : Form
         {
             Text = "Check Config",
             Font = _btnFont,
-            Location = new Point(222, y),
-            Size = new Size(120, 24),
+            Location = new Point(232, y),
+            Size = new Size(130, 24),
             FlatStyle = FlatStyle.Flat,
             ForeColor = FgColor,
             BackColor = BgColor,
@@ -213,7 +213,7 @@ internal sealed class SettingsForm : Form
             Text = "Save",
             Font = _normalFont,
             Location = new Point(16, y),
-            Size = new Size(104, 30),
+            Size = new Size(114, 30),
             FlatStyle = FlatStyle.Flat,
             ForeColor = FgColor,
             BackColor = BgColor,
@@ -225,8 +225,8 @@ internal sealed class SettingsForm : Form
         {
             Text = "Apply",
             Font = _normalFont,
-            Location = new Point(126, y),
-            Size = new Size(104, 30),
+            Location = new Point(136, y),
+            Size = new Size(114, 30),
             FlatStyle = FlatStyle.Flat,
             ForeColor = FgColor,
             BackColor = BgColor,
@@ -238,8 +238,8 @@ internal sealed class SettingsForm : Form
         {
             Text = "Cancel",
             Font = _normalFont,
-            Location = new Point(236, y),
-            Size = new Size(104, 30),
+            Location = new Point(256, y),
+            Size = new Size(114, 30),
             FlatStyle = FlatStyle.Flat,
             ForeColor = FgColor,
             BackColor = BgColor,
@@ -449,11 +449,29 @@ internal sealed class SettingsForm : Form
             Width = w,
             DropDownStyle = ComboBoxStyle.DropDownList,
             FlatStyle = FlatStyle.Flat,
+            DrawMode = DrawMode.OwnerDrawFixed,
+            ItemHeight = 20,
         };
+        cb.DrawItem += OnDrawComboItem;
         cb.Items.AddRange(items);
         cb.SelectedIndex = selectedIndex;
         Controls.Add(cb);
         return cb;
+    }
+
+    private static void OnDrawComboItem(object? sender, DrawItemEventArgs e)
+    {
+        if (e.Index < 0 || sender is not ComboBox cb) return;
+
+        bool selected = (e.State & DrawItemState.Selected) != 0;
+        var bgColor = selected ? Color.FromArgb(0x35, 0x35, 0x50) : EditBgColor;
+
+        using var bgBrush = new SolidBrush(bgColor);
+        e.Graphics.FillRectangle(bgBrush, e.Bounds);
+
+        var text = cb.Items[e.Index]?.ToString() ?? string.Empty;
+        TextRenderer.DrawText(e.Graphics, text, cb.Font, e.Bounds, FgColor,
+            TextFormatFlags.Left | TextFormatFlags.VerticalCenter);
     }
 
     private void AddSectionHeader(string text, int x, ref int y, int sw)

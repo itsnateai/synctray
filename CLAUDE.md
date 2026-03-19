@@ -118,10 +118,11 @@ Start ──→ Running ──→ Stopped (via Stop/Exit/Crash)
 
 ## Status
 
-**v2.0.0 — C# rewrite (2026-03-19)**
+**v2.1.0 — Rescan + configurable actions (2026-03-18)**
 
 ## Changelog
 
+- v2.1.0 — Rescan Now (POST /rest/db/scan) in menu and per-folder submenu. Configurable double-click and middle-click actions via Settings dropdowns (Web UI, Rescan, Pause/Resume, Do Nothing). Dark-themed owner-draw ComboBoxes. P0/P1 audit fixes: atomic file write, HttpClient pooling, System.Text.Json, non-blocking startup delay, Save/Apply/Cancel, OSD not MessageBox, cached GDI objects, ConfiguredKeys pattern. Fixed LibraryImport P/Invoke entry point.
 - v2.0.0 — Full rewrite from AHK v2 to C# .NET 8 WinForms. All features preserved. Dark-themed context menu. Poll timer re-entrancy guard. Memory-optimized hot paths. 7 commits, 3 audit passes.
 - v1.6.0 — Middle-click settings toggle, overclick safeguard
 - v1.5.0 — 14 features: middle-click toggle, device counter, synced folders submenu, configurable paths, first-run wizard, startup delay, portable mode, discovery toggles, config check, network auto-pause, auto-updater, help window, GitHub buttons, ToolTip cleanup
