@@ -25,6 +25,7 @@ internal sealed class AppConfig
     public bool NetworkAutoPause { get; set; }
     public bool AutoCheckUpdates { get; set; }
     public bool SoundNotifications { get; set; }
+    public bool StopOnExit { get; set; }
 
     public string SettingsFilePath { get; }
     public bool IsPortable { get; }
@@ -88,6 +89,7 @@ internal sealed class AppConfig
             NetworkAutoPause = GetBool(settings, "NetworkAutoPause", false);
             AutoCheckUpdates = GetBool(settings, "AutoCheckUpdates", false);
             SoundNotifications = GetBool(settings, "SoundNotifications", false);
+            StopOnExit = GetBool(settings, "StopOnExit", false);
 
             var exe = GetString(settings, "SyncExe", string.Empty);
             if (!string.IsNullOrEmpty(exe))
@@ -114,7 +116,7 @@ internal sealed class AppConfig
     public void MarkAllConfigured()
     {
         string[] allKeys = ["DblClickAction", "MiddleClickAction", "RunOnStartup", "StartBrowser", "ApiKey",
-            "SyncExe", "WebUI", "StartupDelay", "NetworkAutoPause", "AutoCheckUpdates", "SoundNotifications"];
+            "SyncExe", "WebUI", "StartupDelay", "NetworkAutoPause", "AutoCheckUpdates", "SoundNotifications", "StopOnExit"];
         foreach (var key in allKeys)
             _configuredKeys.Add(key);
     }
@@ -137,6 +139,7 @@ internal sealed class AppConfig
         sb.AppendLine($"NetworkAutoPause={BoolToStr(NetworkAutoPause)}");
         sb.AppendLine($"AutoCheckUpdates={BoolToStr(AutoCheckUpdates)}");
         sb.AppendLine($"SoundNotifications={BoolToStr(SoundNotifications)}");
+        sb.AppendLine($"StopOnExit={BoolToStr(StopOnExit)}");
 
         try
         {

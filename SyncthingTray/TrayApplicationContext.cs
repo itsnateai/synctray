@@ -1108,7 +1108,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private void ExitApplication()
     {
         _intentionalStop = true;
-        StopSyncthing();
+        if (_config.StopOnExit)
+            StopSyncthing();
         Dispose();
         Application.Exit();
     }

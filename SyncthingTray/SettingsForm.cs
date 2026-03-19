@@ -28,6 +28,7 @@ internal sealed class SettingsForm : Form
     private CheckBox _cbLocal = null!;
     private CheckBox _cbRelay = null!;
     private CheckBox _cbSoundNotify = null!;
+    private CheckBox _cbStopOnExit = null!;
 
     private readonly Font _boldFont;
     private readonly Font _normalFont;
@@ -112,6 +113,9 @@ internal sealed class SettingsForm : Form
         y += 26;
 
         _cbSoundNotify = AddCheckBox("Play sounds on events", 16, y, _config.SoundNotifications);
+        y += 26;
+
+        _cbStopOnExit = AddCheckBox("Stop Syncthing when tray exits", 16, y, _config.StopOnExit);
         y += 26;
 
         AddLabel("Startup Delay:", 16, y, 0, _normalFont, DimColor);
@@ -414,6 +418,7 @@ internal sealed class SettingsForm : Form
         _config.NetworkAutoPause = _cbNetPause.Checked;
         _config.AutoCheckUpdates = _cbAutoUpdates.Checked;
         _config.SoundNotifications = _cbSoundNotify.Checked;
+        _config.StopOnExit = _cbStopOnExit.Checked;
         _config.ApiKey = _edApiKey.Text;
         _config.SyncExe = _edSyncExe.Text;
         _config.WebUI = _edWebUI.Text;
