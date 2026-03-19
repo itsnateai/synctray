@@ -26,7 +26,7 @@ SyncthingTray/
   Program.cs                  — Entry point, single-instance kill
   TrayApplicationContext.cs   — Main app context (tray icon, menu, polling, state)
   AppConfig.cs                — INI settings read/write
-  SyncthingApi.cs             — Synchronous HTTP client (HttpWebRequest)
+  SyncthingApi.cs             — Synchronous HTTP client (HttpClient with connection pooling)
   SettingsForm.cs             — Dark-themed settings dialog
   HelpForm.cs                 — Help window
   OsdToolTip.cs               — Borderless topmost notification form
@@ -42,7 +42,7 @@ SyncthingTray/
 - **No polling for files** — monitors syncthing state via REST API, not filesystem
 - **System.Windows.Forms.Timer** — fires on UI thread, safe for direct UI updates
 - **IDisposable throughout** — full Dispose(bool) pattern on every class holding resources
-- **Compiled regex via [GeneratedRegex]** — source-generated at compile time, zero runtime cost. Do NOT add `RegexOptions.Compiled` — it's redundant with source generators.
+- **System.Text.Json for API parsing** — proper JSON deserialization via JsonDocument, no regex
 - **Cached process check** — IsSyncthingRunning() has 2s TTL to avoid repeated Process.GetProcessesByName allocations within the same poll cycle. Invalidated explicitly after start/stop.
 - **Tooltip dirty-check** — UpdateTooltip() only rebuilds the string when status/detail/device counts change
 - **Poll timer guard** — timer stopped during PollSyncStatus to prevent re-entrancy on cascading API timeouts (up to 5 HTTP calls x 5s timeout = 25s worst case)
@@ -75,7 +75,6 @@ Start ──→ Running ──→ Stopped (via Stop/Exit/Crash)
 - `SyncthingTray.ini` — user settings (not committed, may contain API key)
 - `sync.ico` / `pause.ico` — tray icons (root copies for reference; embedded in C# project via LogicalName)
 - `.github/workflows/build.yml` — CI: build + publish + artifact upload
-- `MERGE_NOTES.md` — temporary handoff notes (delete after merge)
 
 ## Conventions
 - Never commit the INI file (may contain API key)
@@ -114,7 +113,7 @@ Start ──→ Running ──→ Stopped (via Stop/Exit/Crash)
 | Tooltip/display strings | Dirty-check components; only rebuild on change |
 | Constant interpolated strings | Pre-compute as `static readonly` |
 | Sync detail strings | Cache when value unchanged between polls |
-| Regex | Use `[GeneratedRegex]` — do NOT add `RegexOptions.Compiled` (redundant) |
+| JSON parsing | Use `System.Text.Json` (`JsonDocument`) — no regex for API responses |
 | Timer re-entrancy | Stop timer at start of handler, restart in `finally` |
 
 ## Status
