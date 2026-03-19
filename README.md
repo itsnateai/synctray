@@ -26,6 +26,12 @@ A lightweight system tray manager for [Syncthing](https://syncthing.net/) on Win
 - Single-instance enforcement — kills previous instances on launch
 - Tray icon recovery after Explorer restarts
 
+## Download
+
+Grab the latest from the [Releases](https://github.com/itsnateai/synctray/releases) page:
+
+- **`SyncthingTray.exe`** — self-contained, no .NET runtime needed (~147 MB)
+
 ## Requirements
 
 - Windows 10/11
@@ -34,8 +40,8 @@ A lightweight system tray manager for [Syncthing](https://syncthing.net/) on Win
 ## Setup
 
 1. Download `SyncthingTray.exe` from [Releases](https://github.com/itsnateai/synctray/releases)
-2. Place it in the same folder as `syncthing.exe`
-3. Run it — Syncthing starts automatically in the background
+2. Download [Syncthing](https://github.com/syncthing/syncthing/releases) and extract `syncthing.exe` to the same folder
+3. Run `SyncthingTray.exe` — Syncthing starts automatically in the background
 4. Right-click the tray icon > **Settings** to enter your API key
 
 ## Configuration
@@ -46,6 +52,7 @@ Right-click the tray icon and select **Settings** to configure:
 - **Middle-click action** — configurable: same options as double-click
 - **Run on startup** — creates/removes a Windows Startup shortcut
 - **Start browser** — open the Web UI when Syncthing launches
+- **Sound notifications** — play sounds on device connect/disconnect, file errors, unexpected stop
 - **Auto-pause on public networks** — pause syncing on public Wi-Fi
 - **Startup delay** — wait N seconds before launching Syncthing
 - **Syncthing path** — custom path to `syncthing.exe`
@@ -61,44 +68,17 @@ Settings are saved to `SyncthingTray.ini` in the application directory.
 Requires [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0).
 
 ```bash
-cd SyncthingTray
 dotnet build -c Release
+dotnet test
 ```
 
 ### Publish as single-file .exe
 
 ```bash
-dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true
+dotnet publish SyncthingTray/SyncthingTray.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true
 ```
 
 Output: `SyncthingTray/bin/Release/net8.0-windows/win-x64/publish/SyncthingTray.exe`
-
-## Migrating from AHK Version
-
-The C# version uses the same `SyncthingTray.ini` format. To upgrade:
-
-1. Replace the old `.exe` (or `.ahk`) with the new `SyncthingTray.exe`
-2. Keep your existing `SyncthingTray.ini` — all settings carry over
-3. Keep `syncthing.exe` in the same folder
-
-## Project Structure
-
-```
-SyncthingTray/
-  Program.cs                  — Entry point, single-instance enforcement
-  TrayApplicationContext.cs   — Main tray app, menu, polling, state machine
-  AppConfig.cs                — INI settings read/write
-  SyncthingApi.cs             — Synchronous REST client for Syncthing API
-  SettingsForm.cs             — Dark-themed settings dialog
-  HelpForm.cs                 — Help window
-  OsdToolTip.cs               — Borderless topmost notification (replaces ToolTip)
-  DarkMenuRenderer.cs         — Dark theme for tray context menu
-  NativeMethods.cs            — P/Invoke (RegisterWindowMessage, Beep)
-  StartupShortcut.cs          — Startup .lnk management via COM
-  Resources/
-    sync.ico                  — Running icon (embedded resource)
-    pause.ico                 — Paused icon (embedded resource)
-```
 
 ## License
 
