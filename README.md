@@ -29,7 +29,7 @@ A lightweight system tray manager for [Syncthing](https://syncthing.net/) on Win
 ## Requirements
 
 - Windows 10/11
-- `syncthing.exe` in the same folder as `SyncthingTray.exe`
+- [Syncthing](https://github.com/syncthing/syncthing/releases) — download `syncthing-windows-amd64-*.zip` and place `syncthing.exe` in the same folder as `SyncthingTray.exe`
 
 ## Setup
 
