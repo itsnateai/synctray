@@ -208,7 +208,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
             if (!_firstIconPoll && !running && !_intentionalStop)
             {
                 ShowOsd("Syncthing has stopped unexpectedly!", 5000);
-                Task.Run(() => NativeMethods.Beep(300, 300));
+                if (_config.SoundNotifications)
+                    PlaySound(System.Media.SystemSounds.Hand);
+                else
+                    Task.Run(() => NativeMethods.Beep(300, 300));
             }
 
             _intentionalStop = false;
@@ -494,9 +497,15 @@ internal sealed class TrayApplicationContext : ApplicationContext
                         if (_devicesPollSeeded && _knownDevices.TryGetValue(deviceId, out bool wasConnected))
                         {
                             if (connected && !wasConnected)
+                            {
                                 ShowOsd("Device connected", 3000);
+                                PlaySound(System.Media.SystemSounds.Asterisk);
+                            }
                             else if (!connected && wasConnected)
+                            {
                                 ShowOsd("Device disconnected", 3000);
+                                PlaySound(System.Media.SystemSounds.Exclamation);
+                            }
                         }
                         _knownDevices[deviceId] = connected;
                     }
@@ -534,6 +543,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             {
                 int newErrs = totalErrors - _lastConflictCount;
                 ShowOsd($"{newErrs} file error(s) detected \u2014 check Web UI", 5000);
+                PlaySound(System.Media.SystemSounds.Hand);
             }
             _lastConflictCount = totalErrors;
         }
@@ -1083,6 +1093,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private void InvalidateRunningCache()
     {
         _cachedRunningTick = 0;
+    }
+
+    private void PlaySound(System.Media.SystemSound sound)
+    {
+        if (_config.SoundNotifications)
+            sound.Play();
     }
 
     private void ShowOsd(string text, int durationMs)

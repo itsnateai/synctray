@@ -24,6 +24,7 @@ internal sealed class AppConfig
     public int StartupDelay { get; set; } = 20;
     public bool NetworkAutoPause { get; set; }
     public bool AutoCheckUpdates { get; set; }
+    public bool SoundNotifications { get; set; }
 
     public string SettingsFilePath { get; }
     public bool IsPortable { get; }
@@ -86,6 +87,7 @@ internal sealed class AppConfig
             ApiKey = GetString(settings, "ApiKey", string.Empty);
             NetworkAutoPause = GetBool(settings, "NetworkAutoPause", false);
             AutoCheckUpdates = GetBool(settings, "AutoCheckUpdates", false);
+            SoundNotifications = GetBool(settings, "SoundNotifications", false);
 
             var exe = GetString(settings, "SyncExe", string.Empty);
             if (!string.IsNullOrEmpty(exe))
@@ -112,7 +114,7 @@ internal sealed class AppConfig
     public void MarkAllConfigured()
     {
         string[] allKeys = ["DblClickAction", "MiddleClickAction", "RunOnStartup", "StartBrowser", "ApiKey",
-            "SyncExe", "WebUI", "StartupDelay", "NetworkAutoPause", "AutoCheckUpdates"];
+            "SyncExe", "WebUI", "StartupDelay", "NetworkAutoPause", "AutoCheckUpdates", "SoundNotifications"];
         foreach (var key in allKeys)
             _configuredKeys.Add(key);
     }
@@ -134,6 +136,7 @@ internal sealed class AppConfig
         sb.AppendLine($"StartupDelay={StartupDelay}");
         sb.AppendLine($"NetworkAutoPause={BoolToStr(NetworkAutoPause)}");
         sb.AppendLine($"AutoCheckUpdates={BoolToStr(AutoCheckUpdates)}");
+        sb.AppendLine($"SoundNotifications={BoolToStr(SoundNotifications)}");
 
         try
         {

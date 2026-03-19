@@ -13,20 +13,21 @@ internal sealed class SettingsForm : Form
     private readonly OsdToolTip _osd;
     private bool _disposed;
 
-    // Controls we need to read on Save
-    private readonly ComboBox _cboDblClick;
-    private readonly ComboBox _cboMiddleClick;
-    private readonly CheckBox _cbRunOnStartup;
-    private readonly CheckBox _cbStartBrowser;
-    private readonly CheckBox _cbNetPause;
-    private readonly CheckBox _cbAutoUpdates;
-    private readonly TextBox _edApiKey;
-    private readonly TextBox _edSyncExe;
-    private readonly TextBox _edWebUI;
-    private readonly TextBox _edDelay;
-    private readonly CheckBox _cbGlobal;
-    private readonly CheckBox _cbLocal;
-    private readonly CheckBox _cbRelay;
+    // Controls we need to read on Save (assigned in Build* methods)
+    private ComboBox _cboDblClick = null!;
+    private ComboBox _cboMiddleClick = null!;
+    private CheckBox _cbRunOnStartup = null!;
+    private CheckBox _cbStartBrowser = null!;
+    private CheckBox _cbNetPause = null!;
+    private CheckBox _cbAutoUpdates = null!;
+    private TextBox _edApiKey = null!;
+    private TextBox _edSyncExe = null!;
+    private TextBox _edWebUI = null!;
+    private TextBox _edDelay = null!;
+    private CheckBox _cbGlobal = null!;
+    private CheckBox _cbLocal = null!;
+    private CheckBox _cbRelay = null!;
+    private CheckBox _cbSoundNotify = null!;
 
     private readonly Font _boldFont;
     private readonly Font _normalFont;
@@ -66,22 +67,37 @@ internal sealed class SettingsForm : Form
         int sw = 390;
         int y = 10;
 
-        // Tray Click Actions
+        BuildClickActionsSection(ref y, sw);
+        BuildGeneralSection(ref y, sw);
+        BuildPathsSection(ref y, sw);
+        BuildApiSection(ref y, sw);
+        BuildDiscoverySection(ref y, sw);
+        BuildUpdatesSection(ref y, sw);
+        BuildButtonRow(ref y, sw);
+
+        y += 40;
+        ClientSize = new Size(sw, y);
+    }
+
+    private void BuildClickActionsSection(ref int y, int sw)
+    {
         AddSectionHeader("Tray Click Actions", 16, ref y, sw);
 
         AddLabel("Double-click:", 16, y + 2, 90, _normalFont, DimColor);
-        _cboDblClick = AddComboBox(112, y, 250, AppConfig.ClickActions, AppConfig.ActionValueToIndex(config.DblClickAction));
+        _cboDblClick = AddComboBox(112, y, 250, AppConfig.ClickActions, AppConfig.ActionValueToIndex(_config.DblClickAction));
         y += 30;
 
         AddLabel("Middle-click:", 16, y + 2, 90, _normalFont, DimColor);
-        _cboMiddleClick = AddComboBox(112, y, 250, AppConfig.ClickActions, AppConfig.ActionValueToIndex(config.MiddleClickAction));
+        _cboMiddleClick = AddComboBox(112, y, 250, AppConfig.ClickActions, AppConfig.ActionValueToIndex(_config.MiddleClickAction));
         y += 30;
+    }
 
-        // General
+    private void BuildGeneralSection(ref int y, int sw)
+    {
         AddSectionHeader("General", 16, ref y, sw);
 
-        _cbRunOnStartup = AddCheckBox("Run on startup", 16, y, config.RunOnStartup);
-        if (config.IsPortable)
+        _cbRunOnStartup = AddCheckBox("Run on startup", 16, y, _config.RunOnStartup);
+        if (_config.IsPortable)
         {
             _cbRunOnStartup.Enabled = false;
             AddLabel("(not available in portable mode)", 36, y + 18, 300, _subFont, Color.FromArgb(0x80, 0x80, 0x90));
@@ -89,22 +105,27 @@ internal sealed class SettingsForm : Form
         }
         y += 26;
 
-        _cbStartBrowser = AddCheckBox("Start browser when Syncthing launches", 16, y, config.StartBrowser);
+        _cbStartBrowser = AddCheckBox("Start browser when Syncthing launches", 16, y, _config.StartBrowser);
         y += 26;
 
-        _cbNetPause = AddCheckBox("Auto-pause on public networks", 16, y, config.NetworkAutoPause);
+        _cbNetPause = AddCheckBox("Auto-pause on public networks", 16, y, _config.NetworkAutoPause);
+        y += 26;
+
+        _cbSoundNotify = AddCheckBox("Play sounds on events", 16, y, _config.SoundNotifications);
         y += 26;
 
         AddLabel("Startup Delay:", 16, y, 90, _normalFont, DimColor);
-        _edDelay = AddTextBox(110, y - 2, 50, config.StartupDelay.ToString());
+        _edDelay = AddTextBox(110, y - 2, 50, _config.StartupDelay.ToString());
         AddLabel("seconds", 166, y, 80, _normalFont, DimColor);
         y += 30;
+    }
 
-        // Paths section
+    private void BuildPathsSection(ref int y, int sw)
+    {
         AddSectionHeader("Paths", 16, ref y, sw);
 
         AddLabel("Syncthing:", 16, y, 70, _normalFont, DimColor);
-        _edSyncExe = AddTextBox(90, y - 2, 220, config.SyncExe, true);
+        _edSyncExe = AddTextBox(90, y - 2, 220, _config.SyncExe, true);
         var btnBrowse = new Button
         {
             Text = "...",
@@ -120,7 +141,7 @@ internal sealed class SettingsForm : Form
         y += 28;
 
         AddLabel("Web UI:", 16, y, 70, _normalFont, DimColor);
-        _edWebUI = AddTextBox(90, y - 2, 220, config.WebUI, true);
+        _edWebUI = AddTextBox(90, y - 2, 220, _config.WebUI, true);
         var btnOpenWebUI = new Button
         {
             Text = "Open",
@@ -139,20 +160,23 @@ internal sealed class SettingsForm : Form
         };
         Controls.Add(btnOpenWebUI);
         y += 30;
+    }
 
-        // API section
+    private void BuildApiSection(ref int y, int sw)
+    {
         AddSectionHeader("API", 16, ref y, sw);
 
         AddLabel("API Key:", 16, y, 70, _normalFont, DimColor);
-        _edApiKey = AddTextBox(90, y - 2, 272, config.ApiKey, true);
+        _edApiKey = AddTextBox(90, y - 2, 272, _config.ApiKey, true);
         y += 30;
+    }
 
-        // Discovery section
+    private void BuildDiscoverySection(ref int y, int sw)
+    {
         AddSectionHeader("Discovery", 16, ref y, sw);
 
-        // Load current discovery settings
         bool curGlobal = true, curLocal = true, curRelay = true;
-        if (!string.IsNullOrEmpty(config.ApiKey))
+        if (!string.IsNullOrEmpty(_config.ApiKey))
         {
             try
             {
@@ -173,18 +197,21 @@ internal sealed class SettingsForm : Form
         y += 24;
         _cbRelay = AddCheckBox("NAT Traversal (Relaying)", 16, y, curRelay);
         y += 30;
+    }
 
-        // Updates section
+    private void BuildUpdatesSection(ref int y, int sw)
+    {
         AddSectionHeader("Updates", 16, ref y, sw);
 
-        _cbAutoUpdates = AddCheckBox("Check for Syncthing updates (daily)", 16, y, config.AutoCheckUpdates);
+        _cbAutoUpdates = AddCheckBox("Check for Syncthing updates (daily)", 16, y, _config.AutoCheckUpdates);
         y += 30;
 
-        // Divider
         AddDivider(0, y, sw);
         y += 8;
+    }
 
-        // Link + utility buttons row
+    private void BuildButtonRow(ref int y, int sw)
+    {
         AddLinkButton("GitHub", 16, y, 68, "https://github.com/itsnateai/synctray");
         AddLinkButton("Syncthing", 88, y, 68, "https://github.com/syncthing/syncthing");
 
@@ -219,7 +246,6 @@ internal sealed class SettingsForm : Form
         Controls.Add(btnCheck);
         y += 34;
 
-        // Save / Apply / Cancel
         var btnSave = new Button
         {
             Text = "Save",
@@ -262,9 +288,6 @@ internal sealed class SettingsForm : Form
 
         AcceptButton = btnSave;
         CancelButton = btnCancel;
-
-        y += 40;
-        ClientSize = new Size(sw, y);
     }
 
     private void OnBrowseSyncExe(object? sender, EventArgs e)
@@ -336,6 +359,7 @@ internal sealed class SettingsForm : Form
         _config.StartBrowser = _cbStartBrowser.Checked;
         _config.NetworkAutoPause = _cbNetPause.Checked;
         _config.AutoCheckUpdates = _cbAutoUpdates.Checked;
+        _config.SoundNotifications = _cbSoundNotify.Checked;
         _config.ApiKey = _edApiKey.Text;
         _config.SyncExe = _edSyncExe.Text;
         _config.WebUI = _edWebUI.Text;

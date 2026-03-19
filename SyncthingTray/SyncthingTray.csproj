@@ -19,6 +19,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <InternalsVisibleTo Include="SyncthingTray.Tests" />
+  </ItemGroup>
+
+  <ItemGroup>
     <EmbeddedResource Include="Resources\sync.ico" LogicalName="sync.ico" />
     <EmbeddedResource Include="Resources\pause.ico" LogicalName="pause.ico" />
   </ItemGroup>
