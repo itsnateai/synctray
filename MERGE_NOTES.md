@@ -134,6 +134,22 @@ All 38 AHK features verified present in C#. All timing values match exactly:
 
 ---
 
+## Final Deep Audit Findings (from automated review)
+
+A comprehensive automated review of all .cs files found 2 real issues (fixed in final commit) and several theoretical concerns that are safe in practice:
+
+**Fixed:**
+- `SyncthingApi.cs` — `GetResponseStream()` can return null on edge network conditions. Added null checks on both success and error paths to prevent NullReferenceException in StreamReader constructor.
+
+**Reviewed and determined safe (no fix needed):**
+- `BuildMenu()` called while menu is open — assigning new menu before disposing old is the standard WinForms pattern. Windows handles the transition gracefully.
+- `OsdToolTip` thread safety — all callers marshal to UI thread via `Invoke`/`InvokeRequired`. Timers are `System.Windows.Forms.Timer` (UI thread). No actual race.
+- `Dispose()` ordering — `Visible=false` then dispose menu then dispose icon is the recommended pattern.
+- `MessageWindow` handle creation — always on UI thread because `Program.Main` has `[STAThread]`.
+- `Thread.Sleep` in `StopSyncthing` blocks UI — matches AHK behavior, only during shutdown. Acceptable.
+
+---
+
 ## After Merge Checklist
 
 - [ ] Verify GitHub Actions CI passes (first ever build)

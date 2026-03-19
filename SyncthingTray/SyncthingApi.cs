@@ -53,14 +53,20 @@ internal sealed class SyncthingApi
             }
 
             using var response = (HttpWebResponse)request.GetResponse();
-            using var reader = new System.IO.StreamReader(response.GetResponseStream(), Utf8NoBom);
+            var responseStream = response.GetResponseStream();
+            if (responseStream is null)
+                return ((int)response.StatusCode, string.Empty);
+            using var reader = new System.IO.StreamReader(responseStream, Utf8NoBom);
             return ((int)response.StatusCode, reader.ReadToEnd());
         }
         catch (WebException ex) when (ex.Response is HttpWebResponse errorResponse)
         {
             using (errorResponse)
             {
-                using var reader = new System.IO.StreamReader(errorResponse.GetResponseStream(), Utf8NoBom);
+                var errorStream = errorResponse.GetResponseStream();
+                if (errorStream is null)
+                    return ((int)errorResponse.StatusCode, string.Empty);
+                using var reader = new System.IO.StreamReader(errorStream, Utf8NoBom);
                 return ((int)errorResponse.StatusCode, reader.ReadToEnd());
             }
         }
