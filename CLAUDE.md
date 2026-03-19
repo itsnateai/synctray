@@ -31,7 +31,7 @@ SyncthingTray/
   HelpForm.cs                 — Help window
   OsdToolTip.cs               — Borderless topmost notification form
   DarkMenuRenderer.cs         — Dark theme renderer for ContextMenuStrip
-  NativeMethods.cs            — P/Invoke declarations
+  NativeMethods.cs            — P/Invoke declarations (LibraryImport source-gen)
   StartupShortcut.cs          — Startup .lnk via WScript.Shell COM
   Resources/sync.ico          — Embedded running icon
   Resources/pause.ico         — Embedded paused icon
@@ -42,11 +42,12 @@ SyncthingTray/
 - **No polling for files** — monitors syncthing state via REST API, not filesystem
 - **System.Windows.Forms.Timer** — fires on UI thread, safe for direct UI updates
 - **IDisposable throughout** — full Dispose(bool) pattern on every class holding resources
-- **Compiled regex via [GeneratedRegex]** — source-generated at compile time, zero runtime cost
-- **Cached process check** — IsSyncthingRunning() has 2s TTL to avoid repeated Process.GetProcessesByName allocations within the same poll cycle
+- **Compiled regex via [GeneratedRegex]** — source-generated at compile time, zero runtime cost. Do NOT add `RegexOptions.Compiled` — it's redundant with source generators.
+- **Cached process check** — IsSyncthingRunning() has 2s TTL to avoid repeated Process.GetProcessesByName allocations within the same poll cycle. Invalidated explicitly after start/stop.
 - **Tooltip dirty-check** — UpdateTooltip() only rebuilds the string when status/detail/device counts change
-- **Poll timer guard** — timer stopped during PollSyncStatus to prevent re-entrancy on cascading API timeouts
+- **Poll timer guard** — timer stopped during PollSyncStatus to prevent re-entrancy on cascading API timeouts (up to 5 HTTP calls x 5s timeout = 25s worst case)
 - **Menu rebuild on state change only** — BuildMenu() called when running/paused state transitions, not on every timer tick
+- **Dark theme everywhere** — Forms use BackColor 0x1E1E2E / ForeColor 0xCDD6F3. ContextMenuStrip uses custom DarkMenuRenderer (ToolStripProfessionalRenderer subclass).
 
 ### State Machine
 ```
@@ -72,16 +73,49 @@ Start ──→ Running ──→ Stopped (via Stop/Exit/Crash)
 - `SyncthingTray/` — C# project directory
 - `SyncthingTray.ahk` — legacy AHK script (kept for reference)
 - `SyncthingTray.ini` — user settings (not committed, may contain API key)
-- `sync.ico` / `pause.ico` — tray icons (root copies for reference; embedded in C# project)
+- `sync.ico` / `pause.ico` — tray icons (root copies for reference; embedded in C# project via LogicalName)
+- `.github/workflows/build.yml` — CI: build + publish + artifact upload
+- `MERGE_NOTES.md` — temporary handoff notes (delete after merge)
 
 ## Conventions
 - Never commit the INI file (may contain API key)
 - All notifications via OsdToolTip (borderless form), never BalloonTipText
-- Use `Environment.ProcessPath` (not `Assembly.Location`) for single-file publish compatibility
+- Use `Environment.ProcessPath` (not `Assembly.Location`) — Assembly.Location returns empty string in single-file publish
 - Use `nint` not `IntPtr` for handles on .NET 7+
 - Dispose every Process handle from GetProcessesByName/Start with `using`
 - No `async` anywhere — synchronous WinForms only
 - `TreatWarningsAsErrors` enabled in .csproj
+- Embedded resources use `LogicalName` in .csproj — must match the string passed to `GetManifestResourceStream()`
+- COM objects: always `Marshal.ReleaseComObject()` in `finally` block
+- Never return shared system icons (e.g. `SystemIcons.Application`) as owned — clone them if needed for later disposal
+- Never call `Items.Clear()` before `Dispose()` on a ContextMenuStrip — it detaches items so Dispose can't cascade. Just call `Dispose()`.
+- Guard `GetResponseStream()` for null before passing to StreamReader
+- `ApplicationConfiguration.Initialize()` is .NET 8 source-generated — sets up DPI awareness and visual styles
+
+## Resource Management Rules (bugs found and fixed during v2.0.0 audit)
+
+| Pattern | Rule |
+|---------|------|
+| `Process.GetProcessesByName()` | Wrap EVERY Process in `using` — each holds an OS handle |
+| `Process.Start()` | Always `using var p = Process.Start(...)` |
+| `SystemIcons.*` | Never return as owned; clone with `(Icon)icon.Clone()` if disposing later |
+| `GetManifestResourceStream()` | Dispose stream after reading (use `using`) |
+| `ContextMenuStrip` rebuild | Assign new menu first, then `oldMenu?.Dispose()` — Dispose cascades to children |
+| `NotifyIcon` | Set `Visible = false` BEFORE Dispose — prevents ghost icon in tray |
+| Font objects | Owner class must dispose in `Dispose(bool)` — GC finalizer is unreliable |
+| COM objects | `Marshal.ReleaseComObject()` in `finally` block |
+| `RegisterHotKey` | Match with `UnregisterHotKey` in cleanup (not used in this project but noted for future) |
+
+## Hot-Path Performance Rules (zero-allocation idle target)
+
+| Pattern | Rule |
+|---------|------|
+| `Process.GetProcessesByName` repeated calls | Cache with TTL; invalidate on start/stop |
+| Tooltip/display strings | Dirty-check components; only rebuild on change |
+| Constant interpolated strings | Pre-compute as `static readonly` |
+| Sync detail strings | Cache when value unchanged between polls |
+| Regex | Use `[GeneratedRegex]` — do NOT add `RegexOptions.Compiled` (redundant) |
+| Timer re-entrancy | Stop timer at start of handler, restart in `finally` |
 
 ## Status
 
@@ -89,7 +123,7 @@ Start ──→ Running ──→ Stopped (via Stop/Exit/Crash)
 
 ## Changelog
 
-- v2.0.0 — Full rewrite from AHK v2 to C# .NET 8 WinForms. All features preserved. Dark-themed context menu. Poll timer re-entrancy guard. Memory-optimized hot paths.
+- v2.0.0 — Full rewrite from AHK v2 to C# .NET 8 WinForms. All features preserved. Dark-themed context menu. Poll timer re-entrancy guard. Memory-optimized hot paths. 7 commits, 3 audit passes.
 - v1.6.0 — Middle-click settings toggle, overclick safeguard
 - v1.5.0 — 14 features: middle-click toggle, device counter, synced folders submenu, configurable paths, first-run wizard, startup delay, portable mode, discovery toggles, config check, network auto-pause, auto-updater, help window, GitHub buttons, ToolTip cleanup
 - v1.4.0 — Device alerts, conflict detection, pause/resume
