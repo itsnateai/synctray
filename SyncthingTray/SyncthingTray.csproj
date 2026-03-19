@@ -1,0 +1,25 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ApplicationIcon>Resources\sync.ico</ApplicationIcon>
+    <Version>1.6.0</Version>
+    <AssemblyName>SyncthingTray</AssemblyName>
+    <RootNamespace>SyncthingTray</RootNamespace>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <TreatWarningsAsErrors>true</TreatWarningsAsErrors>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="System.Management" Version="8.0.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="Resources\sync.ico" LogicalName="sync.ico" />
+    <EmbeddedResource Include="Resources\pause.ico" LogicalName="pause.ico" />
+  </ItemGroup>
+
+</Project>
