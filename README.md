@@ -42,10 +42,10 @@ A lightweight system tray manager for [Syncthing](https://syncthing.net/) on Win
 
 Right-click the tray icon and select **Settings** to configure:
 
-- **Double-click opens Web UI** — toggle double-click behavior on the tray icon
+- **Double-click action** — configurable: Open Web UI, Rescan, Pause/Resume, or Do Nothing
+- **Middle-click action** — configurable: same options as double-click
 - **Run on startup** — creates/removes a Windows Startup shortcut
 - **Start browser** — open the Web UI when Syncthing launches
-- **Middle-click toggle** — middle-click tray icon to pause/resume
 - **Auto-pause on public networks** — pause syncing on public Wi-Fi
 - **Startup delay** — wait N seconds before launching Syncthing
 - **Syncthing path** — custom path to `syncthing.exe`

@@ -208,7 +208,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             if (!_firstIconPoll && !running && !_intentionalStop)
             {
                 ShowOsd("Syncthing has stopped unexpectedly!", 5000);
-                NativeMethods.Beep(300, 300);
+                Task.Run(() => NativeMethods.Beep(300, 300));
             }
 
             _intentionalStop = false;

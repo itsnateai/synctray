@@ -376,6 +376,29 @@ internal sealed class SettingsForm : Form
             catch { /* shortcut failure is non-fatal */ }
         }
 
+        // Warn if network auto-pause is enabled but WMI is unavailable
+        if (_config.NetworkAutoPause)
+        {
+            try
+            {
+                using var searcher = new System.Management.ManagementObjectSearcher(
+                    "root\\StandardCimv2",
+                    "SELECT NetworkCategory FROM MSFT_NetConnectionProfile");
+                using var results = searcher.Get();
+                bool found = false;
+                foreach (var obj in results)
+                {
+                    using (obj) { found = true; break; }
+                }
+                if (!found)
+                    _osd.ShowMessage("Network auto-pause may not work on this system", 5000);
+            }
+            catch
+            {
+                _osd.ShowMessage("Network auto-pause may not work on this system", 5000);
+            }
+        }
+
         _onSaved();
     }
 
