@@ -25,6 +25,13 @@ internal sealed class AppConfig
     public bool IsPortable { get; }
     public bool IsFirstRun { get; }
 
+    /// <summary>
+    /// Tracks which keys were explicitly present in the INI file.
+    /// Only these keys are written back on Save(), so new defaults
+    /// in future versions aren't overridden by stale saved values.
+    /// </summary>
+    private readonly HashSet<string> _configuredKeys = new(StringComparer.OrdinalIgnoreCase);
+
     private static readonly Encoding Utf8NoBom = new UTF8Encoding(false);
 
     public AppConfig(string appDirectory)
@@ -56,6 +63,10 @@ internal sealed class AppConfig
             var lines = File.ReadAllLines(SettingsFilePath, Utf8NoBom);
             var settings = ParseIni(lines);
 
+            _configuredKeys.Clear();
+            foreach (var key in settings.Keys)
+                _configuredKeys.Add(key);
+
             DblClickOpen = GetBool(settings, "DblClickOpen", true);
             RunOnStartup = GetBool(settings, "RunOnStartup", false);
             StartBrowser = GetBool(settings, "StartBrowser", false);
@@ -78,8 +89,27 @@ internal sealed class AppConfig
         catch { /* settings file locked or corrupt — use defaults */ }
     }
 
+    /// <summary>
+    /// Mark a key as explicitly configured (called from UI save).
+    /// </summary>
+    public void MarkConfigured(string key) => _configuredKeys.Add(key);
+
+    /// <summary>
+    /// Mark all current settings as configured (user saved via Settings dialog).
+    /// </summary>
+    public void MarkAllConfigured()
+    {
+        string[] allKeys = ["DblClickOpen", "RunOnStartup", "StartBrowser", "ApiKey",
+            "SyncExe", "WebUI", "StartupDelay", "NetworkAutoPause", "AutoCheckUpdates", "MiddleClickEnabled"];
+        foreach (var key in allKeys)
+            _configuredKeys.Add(key);
+    }
+
     public void Save()
     {
+        // When saving from the UI, all keys are explicitly configured
+        MarkAllConfigured();
+
         var sb = new StringBuilder();
         sb.AppendLine("[Settings]");
         sb.AppendLine($"DblClickOpen={BoolToStr(DblClickOpen)}");
@@ -95,7 +125,9 @@ internal sealed class AppConfig
 
         try
         {
-            File.WriteAllText(SettingsFilePath, sb.ToString(), Utf8NoBom);
+            var tmpPath = SettingsFilePath + ".tmp";
+            File.WriteAllText(tmpPath, sb.ToString(), Utf8NoBom);
+            File.Move(tmpPath, SettingsFilePath, overwrite: true);
         }
         catch { /* file locked — silently fail */ }
     }

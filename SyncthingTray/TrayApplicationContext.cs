@@ -1,6 +1,6 @@
 using System.Diagnostics;
 using System.Management;
-using System.Text.RegularExpressions;
+using System.Text.Json;
 
 namespace SyncthingTray;
 
@@ -8,7 +8,7 @@ namespace SyncthingTray;
 /// Main application context — manages the system tray icon, context menu,
 /// polling timer, and all syncthing lifecycle operations.
 /// </summary>
-internal sealed partial class TrayApplicationContext : ApplicationContext
+internal sealed class TrayApplicationContext : ApplicationContext
 {
     private readonly AppConfig _config;
     private readonly SyncthingApi _api;
@@ -65,42 +65,6 @@ internal sealed partial class TrayApplicationContext : ApplicationContext
     // Cached sync detail to avoid string allocation when percentage unchanged
     private double _lastPct = -1;
 
-    // Compiled regex for JSON parsing (zero-allocation on hot path — compiled once)
-    private static readonly Regex CompletionRegex = CreateCompletionRegex();
-    private static readonly Regex DeviceBlockRegex = CreateDeviceBlockRegex();
-    private static readonly Regex ConnectedRegex = CreateConnectedRegex();
-    private static readonly Regex PausedRegex = CreatePausedRegex();
-    private static readonly Regex PullErrorsRegex = CreatePullErrorsRegex();
-    private static readonly Regex NewerRegex = CreateNewerRegex();
-    private static readonly Regex LatestRegex = CreateLatestRegex();
-    private static readonly Regex RunningVersionRegex = CreateRunningVersionRegex();
-    private static readonly Regex FolderIdRegex = CreateFolderIdRegex();
-    private static readonly Regex FolderLabelRegex = CreateFolderLabelRegex();
-    private static readonly Regex FolderPathRegex = CreateFolderPathRegex();
-
-    [GeneratedRegex("\"completion\"\\s*:\\s*([\\d.]+)")]
-    private static partial Regex CreateCompletionRegex();
-    [GeneratedRegex("\"([A-Z0-9]{7}-[^\"]+)\"\\s*:\\s*\\{")]
-    private static partial Regex CreateDeviceBlockRegex();
-    [GeneratedRegex("\"connected\"\\s*:\\s*(true|false)")]
-    private static partial Regex CreateConnectedRegex();
-    [GeneratedRegex("\"paused\"\\s*:\\s*(true|false)")]
-    private static partial Regex CreatePausedRegex();
-    [GeneratedRegex("\"pullErrors\"\\s*:\\s*(\\d+)")]
-    private static partial Regex CreatePullErrorsRegex();
-    [GeneratedRegex("\"newer\"\\s*:\\s*(true|false)")]
-    private static partial Regex CreateNewerRegex();
-    [GeneratedRegex("\"latest\"\\s*:\\s*\"([^\"]*)\"")]
-    private static partial Regex CreateLatestRegex();
-    [GeneratedRegex("\"running\"\\s*:\\s*\"([^\"]*)\"")]
-    private static partial Regex CreateRunningVersionRegex();
-    [GeneratedRegex("\"id\"\\s*:\\s*\"([^\"]*)\"")]
-    private static partial Regex CreateFolderIdRegex();
-    [GeneratedRegex("\"label\"\\s*:\\s*\"([^\"]*)\"")]
-    private static partial Regex CreateFolderLabelRegex();
-    [GeneratedRegex("\"path\"\\s*:\\s*\"([^\"]*)\"")]
-    private static partial Regex CreateFolderPathRegex();
-
     public TrayApplicationContext()
     {
         var appDir = Path.GetDirectoryName(Environment.ProcessPath ?? Application.ExecutablePath) ?? AppContext.BaseDirectory;
@@ -124,44 +88,57 @@ internal sealed partial class TrayApplicationContext : ApplicationContext
 
         _messageWindow = new MessageWindow(this);
 
-        // Startup delay
-        if (_config.StartupDelay > 0)
-            Thread.Sleep(_config.StartupDelay * 1000);
-
-        // Launch syncthing if not running
-        if (!IsSyncthingRunning())
-            LaunchSyncthing();
-
-        // Build initial menu
+        // Build initial menu (always, even during startup delay)
         BuildMenu();
 
         // Timers
         _iconTimer = new System.Windows.Forms.Timer { Interval = 5000 };
         _iconTimer.Tick += (_, _) => UpdateTrayIcon();
-        _iconTimer.Start();
 
         _pollTimer = new System.Windows.Forms.Timer { Interval = 10000 };
         _pollTimer.Tick += (_, _) => PollSyncStatus();
-        _pollTimer.Start();
 
-        // Initial poll
-        PollSyncStatus();
-
-        // Load folders
-        LoadFolders();
+        // Startup delay — use a timer so the message pump stays alive
+        if (_config.StartupDelay > 0)
+        {
+            var startupTimer = new System.Windows.Forms.Timer { Interval = _config.StartupDelay * 1000 };
+            startupTimer.Tick += (_, _) =>
+            {
+                startupTimer.Stop();
+                startupTimer.Dispose();
+                StartAfterDelay();
+            };
+            startupTimer.Start();
+        }
+        else
+        {
+            StartAfterDelay();
+        }
 
         // First-run: open settings
         if (_config.IsFirstRun)
         {
-            var delayTimer = new System.Windows.Forms.Timer { Interval = 500 };
-            delayTimer.Tick += (_, _) =>
+            var firstRunTimer = new System.Windows.Forms.Timer { Interval = 500 };
+            firstRunTimer.Tick += (_, _) =>
             {
-                delayTimer.Stop();
-                delayTimer.Dispose();
+                firstRunTimer.Stop();
+                firstRunTimer.Dispose();
                 OpenSettings();
             };
-            delayTimer.Start();
+            firstRunTimer.Start();
         }
+    }
+
+    private void StartAfterDelay()
+    {
+        if (!IsSyncthingRunning())
+            LaunchSyncthing();
+
+        _iconTimer.Start();
+        _pollTimer.Start();
+
+        PollSyncStatus();
+        LoadFolders();
     }
 
     // --- Tray Icon Events ---
@@ -349,9 +326,8 @@ internal sealed partial class TrayApplicationContext : ApplicationContext
             var (status, body) = _api.Get("/rest/db/completion");
             if (status == 200)
             {
-                var m = CompletionRegex.Match(body);
-                if (m.Success && double.TryParse(m.Groups[1].Value, System.Globalization.NumberStyles.Float,
-                    System.Globalization.CultureInfo.InvariantCulture, out double pct))
+                using var doc = JsonDocument.Parse(body);
+                if (doc.RootElement.TryGetProperty("completion", out var compEl) && compEl.TryGetDouble(out double pct))
                 {
                     pct = Math.Round(pct, 1);
                     if (pct >= 100)
@@ -362,7 +338,6 @@ internal sealed partial class TrayApplicationContext : ApplicationContext
                     else
                     {
                         _syncStatus = "syncing";
-                        // Only allocate a new string when pct actually changed
                         if (pct != _lastPct)
                         {
                             _lastPct = pct;
@@ -394,49 +369,44 @@ internal sealed partial class TrayApplicationContext : ApplicationContext
             var (status2, body2) = _api.Get("/rest/system/connections");
             if (status2 == 200)
             {
-                bool allPaused = true;
-                int deviceCount = 0;
-                int connCount = 0;
-
-                var deviceMatches = DeviceBlockRegex.Matches(body2);
-                foreach (Match dm in deviceMatches)
+                using var doc2 = JsonDocument.Parse(body2);
+                if (doc2.RootElement.TryGetProperty("connections", out var connections))
                 {
-                    string deviceId = dm.Groups[1].Value;
-                    int blockStart = dm.Index + dm.Length;
+                    bool allPaused = true;
+                    int deviceCount = 0;
+                    int connCount = 0;
 
-                    bool connected = false;
-                    bool paused = false;
-
-                    var cm = ConnectedRegex.Match(body2, blockStart);
-                    if (cm.Success)
-                        connected = cm.Groups[1].Value == "true";
-
-                    var pm = PausedRegex.Match(body2, blockStart);
-                    if (pm.Success)
-                        paused = pm.Groups[1].Value == "true";
-
-                    if (!paused)
-                        allPaused = false;
-
-                    deviceCount++;
-                    if (connected)
-                        connCount++;
-
-                    if (_devicesPollSeeded && _knownDevices.TryGetValue(deviceId, out bool wasConnected))
+                    foreach (var prop in connections.EnumerateObject())
                     {
-                        if (connected && !wasConnected)
-                            ShowOsd("Device connected", 3000);
-                        else if (!connected && wasConnected)
-                            ShowOsd("Device disconnected", 3000);
-                    }
-                    _knownDevices[deviceId] = connected;
-                }
-                _devicesPollSeeded = true;
-                _connectedCount = connCount;
-                _totalDevices = deviceCount;
+                        string deviceId = prop.Name;
+                        var dev = prop.Value;
 
-                if (deviceCount > 0)
-                    _paused = allPaused;
+                        bool connected = dev.TryGetProperty("connected", out var cEl) && cEl.GetBoolean();
+                        bool paused = dev.TryGetProperty("paused", out var pEl) && pEl.GetBoolean();
+
+                        if (!paused)
+                            allPaused = false;
+
+                        deviceCount++;
+                        if (connected)
+                            connCount++;
+
+                        if (_devicesPollSeeded && _knownDevices.TryGetValue(deviceId, out bool wasConnected))
+                        {
+                            if (connected && !wasConnected)
+                                ShowOsd("Device connected", 3000);
+                            else if (!connected && wasConnected)
+                                ShowOsd("Device disconnected", 3000);
+                        }
+                        _knownDevices[deviceId] = connected;
+                    }
+                    _devicesPollSeeded = true;
+                    _connectedCount = connCount;
+                    _totalDevices = deviceCount;
+
+                    if (deviceCount > 0)
+                        _paused = allPaused;
+                }
             }
         }
         catch { /* best-effort */ }
@@ -447,8 +417,8 @@ internal sealed partial class TrayApplicationContext : ApplicationContext
             var (status3, body3) = _api.Get("/rest/db/status?folder=default");
             if (status3 == 200)
             {
-                var em = PullErrorsRegex.Match(body3);
-                if (em.Success && int.TryParse(em.Groups[1].Value, out int errCount))
+                using var doc3 = JsonDocument.Parse(body3);
+                if (doc3.RootElement.TryGetProperty("pullErrors", out var peEl) && peEl.TryGetInt32(out int errCount))
                 {
                     if (errCount > _lastConflictCount && _lastConflictCount >= 0)
                     {
@@ -514,16 +484,12 @@ internal sealed partial class TrayApplicationContext : ApplicationContext
             var (status, body) = _api.Get("/rest/system/upgrade");
             if (status == 200)
             {
-                bool newer = false;
-                string latest = string.Empty;
-                string running = string.Empty;
+                using var doc = JsonDocument.Parse(body);
+                var root = doc.RootElement;
 
-                var mn = NewerRegex.Match(body);
-                if (mn.Success) newer = mn.Groups[1].Value == "true";
-                var ml = LatestRegex.Match(body);
-                if (ml.Success) latest = ml.Groups[1].Value;
-                var mr = RunningVersionRegex.Match(body);
-                if (mr.Success) running = mr.Groups[1].Value;
+                bool newer = root.TryGetProperty("newer", out var nEl) && nEl.GetBoolean();
+                string latest = root.TryGetProperty("latest", out var lEl) ? lEl.GetString() ?? string.Empty : string.Empty;
+                string running = root.TryGetProperty("running", out var rEl) ? rEl.GetString() ?? string.Empty : string.Empty;
 
                 _updateRunning = running;
 
@@ -607,20 +573,13 @@ internal sealed partial class TrayApplicationContext : ApplicationContext
             var (status, body) = _api.Get("/rest/config/folders");
             if (status == 200)
             {
+                using var doc = JsonDocument.Parse(body);
                 var list = new List<FolderInfo>();
-                var idMatches = FolderIdRegex.Matches(body);
-                foreach (Match mid in idMatches)
+                foreach (var folder in doc.RootElement.EnumerateArray())
                 {
-                    string fId = mid.Groups[1].Value;
-                    int searchFrom = mid.Index + mid.Length;
-
-                    string fLabel = string.Empty;
-                    string fPath = string.Empty;
-
-                    var ml = FolderLabelRegex.Match(body, searchFrom);
-                    if (ml.Success) fLabel = ml.Groups[1].Value;
-                    var mp = FolderPathRegex.Match(body, searchFrom);
-                    if (mp.Success) fPath = mp.Groups[1].Value;
+                    string fId = folder.TryGetProperty("id", out var idEl) ? idEl.GetString() ?? string.Empty : string.Empty;
+                    string fLabel = folder.TryGetProperty("label", out var lblEl) ? lblEl.GetString() ?? string.Empty : string.Empty;
+                    string fPath = folder.TryGetProperty("path", out var pathEl) ? pathEl.GetString() ?? string.Empty : string.Empty;
 
                     string displayName = fLabel.Length > 0 ? fLabel : fId;
                     if (fPath.Length > 0)
@@ -665,7 +624,7 @@ internal sealed partial class TrayApplicationContext : ApplicationContext
             }
         }
 
-        using var form = new SettingsForm(_config, _api, () =>
+        using var form = new SettingsForm(_config, _api, _osd, () =>
         {
             LoadFolders();
             ShowOsd("Settings saved", 3000);
@@ -820,6 +779,7 @@ internal sealed partial class TrayApplicationContext : ApplicationContext
                     InvalidateRunningCache();
                     if (!IsSyncthingRunning()) return;
                     Thread.Sleep(100);
+                    Application.DoEvents();
                 }
             }
             catch { /* fall through to force kill */ }
@@ -839,6 +799,7 @@ internal sealed partial class TrayApplicationContext : ApplicationContext
             InvalidateRunningCache();
             if (!IsSyncthingRunning()) break;
             Thread.Sleep(100);
+            Application.DoEvents();
         }
         InvalidateRunningCache();
     }
@@ -952,6 +913,7 @@ internal sealed partial class TrayApplicationContext : ApplicationContext
                 _osd.Dispose();
                 _messageWindow.Dispose();
 
+                _api.Dispose();
                 _syncIcon.Dispose();
                 _pauseIcon.Dispose();
             }
