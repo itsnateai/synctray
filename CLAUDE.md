@@ -4,50 +4,94 @@
 System tray manager for Syncthing on Windows. Launches syncthing.exe hidden, provides tray controls (start/stop/restart/pause/resume), opens the Web UI, monitors device connections and file conflicts, manages discovery settings, and checks for Syncthing updates.
 
 ## Tech Stack
-- AutoHotkey v2
-- Single file: `SyncthingTray.ahk` (~970 lines)
-- Settings stored in `SyncthingTray.ini` (INI format)
+- C# / .NET 8 / Windows Forms
+- No third-party NuGet packages (except System.Management for WMI)
+- Settings stored in `SyncthingTray.ini` (INI format, UTF-8 no BOM)
 - Syncthing REST API for status polling, pause/resume, config, and auto-updates
+- P/Invoke for RegisterWindowMessage and kernel32.Beep
+- COM interop for startup shortcut (.lnk) creation
 
 ## Build
 ```bash
-MSYS_NO_PATHCONV=1 "X:/_Projects/_.claude/_tools/Ahk/Ahk2Exe.exe" /in SyncthingTray.ahk /out SyncthingTray.exe /icon sync.ico /compress 0 /silent
+cd SyncthingTray
+dotnet build -c Release
+dotnet publish -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true
 ```
-- Icons embedded via `@Ahk2Exe-AddResource` (sync.ico=10, pause.ico=11) — compiled .exe works standalone
 
 ## Architecture
-- Config section at top with globals
-- INI-based settings loaded at startup
-- Tray menu rebuilt dynamically when syncthing state changes
-- Settings GUI uses native AHK Gui with dark theme (sectioned layout with bold headers + dividers)
-- API helper functions: `ApiGet()`, `ApiPost()`, `ApiPatch()` — centralized WinHttp boilerplate
-- Graceful shutdown via Syncthing REST API (`POST /rest/system/shutdown`) with ProcessClose fallback
-- 10-second polling timer: completion status + device connections + conflict detection + network auto-pause + update checks
-- Anti-spam: devices seeded silently on first poll, alerts only on state changes
-- Portable mode detection: disables RunOnStartup on removable drives
-- First-run detection: auto-opens Settings GUI when no INI exists
+
+### Project Structure
+```
+SyncthingTray/
+  Program.cs                  — Entry point, single-instance kill
+  TrayApplicationContext.cs   — Main app context (tray icon, menu, polling, state)
+  AppConfig.cs                — INI settings read/write
+  SyncthingApi.cs             — Synchronous HTTP client (HttpWebRequest)
+  SettingsForm.cs             — Dark-themed settings dialog
+  HelpForm.cs                 — Help window
+  OsdToolTip.cs               — Borderless topmost notification form
+  DarkMenuRenderer.cs         — Dark theme renderer for ContextMenuStrip
+  NativeMethods.cs            — P/Invoke declarations
+  StartupShortcut.cs          — Startup .lnk via WScript.Shell COM
+  Resources/sync.ico          — Embedded running icon
+  Resources/pause.ico         — Embedded paused icon
+```
+
+### Key Design Decisions
+- **No async** — pure WinForms, single UI thread, all I/O synchronous
+- **No polling for files** — monitors syncthing state via REST API, not filesystem
+- **System.Windows.Forms.Timer** — fires on UI thread, safe for direct UI updates
+- **IDisposable throughout** — full Dispose(bool) pattern on every class holding resources
+- **Compiled regex via [GeneratedRegex]** — source-generated at compile time, zero runtime cost
+- **Cached process check** — IsSyncthingRunning() has 2s TTL to avoid repeated Process.GetProcessesByName allocations within the same poll cycle
+- **Tooltip dirty-check** — UpdateTooltip() only rebuilds the string when status/detail/device counts change
+- **Poll timer guard** — timer stopped during PollSyncStatus to prevent re-entrancy on cascading API timeouts
+- **Menu rebuild on state change only** — BuildMenu() called when running/paused state transitions, not on every timer tick
+
+### State Machine
+```
+States: Stopped, Running (Idle/Syncing/Error/Unknown), Paused
+
+Start ──→ Running ──→ Stopped (via Stop/Exit/Crash)
+              ↕
+           Paused (via Pause/Resume, middle-click, network auto-pause)
+```
+
+### Syncthing REST API Endpoints Used
+- `GET /rest/db/completion` — sync progress percentage
+- `GET /rest/system/connections` — device tracking + pause state
+- `GET /rest/db/status?folder=default` — conflict/pull error detection
+- `GET /rest/config/folders` — folder list for submenu
+- `GET /rest/config/options` — discovery settings
+- `GET /rest/system/status` — config check
+- `GET /rest/system/upgrade` — update check
+- `POST /rest/system/pause` / `resume` / `shutdown` / `upgrade`
+- `PATCH /rest/config/options` — save discovery settings
 
 ## Key Files
-- `SyncthingTray.ahk` — main script
-- `SyncthingTray.ini` — user settings (DblClickOpen, RunOnStartup, ApiKey, StartBrowser, SyncExe, WebUI, StartupDelay, NetworkAutoPause, AutoCheckUpdates)
-- `sync.ico` / `pause.ico` — tray icons (embedded in .exe; disk copies for source users running .ahk)
-- `syncthing.md` — feature backlog (approved features + done table)
+- `SyncthingTray/` — C# project directory
+- `SyncthingTray.ahk` — legacy AHK script (kept for reference)
+- `SyncthingTray.ini` — user settings (not committed, may contain API key)
+- `sync.ico` / `pause.ico` — tray icons (root copies for reference; embedded in C# project)
 
 ## Conventions
-- Use `/compress 0` when compiling to avoid Defender false positives
 - Never commit the INI file (may contain API key)
-- All globals prefixed with `g_` for non-config state variables
-- ToolTip for notifications (not TrayTip/MsgBox)
+- All notifications via OsdToolTip (borderless form), never BalloonTipText
+- Use `Environment.ProcessPath` (not `Assembly.Location`) for single-file publish compatibility
+- Use `nint` not `IntPtr` for handles on .NET 7+
+- Dispose every Process handle from GetProcessesByName/Start with `using`
+- No `async` anywhere — synchronous WinForms only
+- `TreatWarningsAsErrors` enabled in .csproj
 
 ## Status
 
-**v1.6.0 — Current release (2026-03-17)**
+**v2.0.0 — C# rewrite (2026-03-19)**
 
 ## Changelog
 
-See git log for full history. Key releases:
-- v1.6.0 — Middle-click settings toggle, overclick safeguard (shared 1500ms cooldown on Start/Stop/Restart, 800ms on pause toggle)
+- v2.0.0 — Full rewrite from AHK v2 to C# .NET 8 WinForms. All features preserved. Dark-themed context menu. Poll timer re-entrancy guard. Memory-optimized hot paths.
+- v1.6.0 — Middle-click settings toggle, overclick safeguard
 - v1.5.0 — 14 features: middle-click toggle, device counter, synced folders submenu, configurable paths, first-run wizard, startup delay, portable mode, discovery toggles, config check, network auto-pause, auto-updater, help window, GitHub buttons, ToolTip cleanup
 - v1.4.0 — Device alerts, conflict detection, pause/resume
 - v1.3.0 — Start Browser setting
-- v1.2.0 — Initial final release (all audit items resolved)
+- v1.2.0 — Initial final release
