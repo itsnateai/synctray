@@ -145,14 +145,30 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void OnTrayDoubleClick(object? sender, EventArgs e)
     {
-        if (_config.DblClickOpen)
-            OpenWebUI();
+        ExecuteClickAction(_config.DblClickAction);
     }
 
     private void OnTrayMouseUp(object? sender, MouseEventArgs e)
     {
-        if (e.Button == MouseButtons.Middle && _config.MiddleClickEnabled)
-            TogglePause();
+        if (e.Button == MouseButtons.Middle)
+            ExecuteClickAction(_config.MiddleClickAction);
+    }
+
+    private void ExecuteClickAction(string action)
+    {
+        switch (action)
+        {
+            case "webui":
+                OpenWebUI();
+                break;
+            case "rescan":
+                MenuRescanAll();
+                break;
+            case "pause":
+                TogglePause();
+                break;
+            // "none" or unknown — do nothing
+        }
     }
 
     // --- Icon & Tooltip ---
@@ -243,12 +259,21 @@ internal sealed class TrayApplicationContext : ApplicationContext
             foreach (var f in _folders)
             {
                 var path = f.Path;
-                folderItem.DropDownItems.Add(f.Label, null, (_, _) => OpenFolder(path));
+                var folderId = f.Id;
+                var subItem = new ToolStripMenuItem(f.Label);
+                subItem.DropDownItems.Add("Open Folder", null, (_, _) => OpenFolder(path));
+                subItem.DropDownItems.Add("Rescan", null, (_, _) => MenuRescanFolder(folderId));
+                folderItem.DropDownItems.Add(subItem);
             }
             folderItem.DropDownItems.Add(new ToolStripSeparator());
-            folderItem.DropDownItems.Add("Refresh", null, (_, _) => LoadFolders());
+            folderItem.DropDownItems.Add("Refresh List", null, (_, _) => LoadFolders());
             menu.Items.Add(folderItem);
         }
+
+        // Rescan Now
+        if (running && !string.IsNullOrEmpty(_config.ApiKey))
+            menu.Items.Add("Rescan Now", null, (_, _) => MenuRescanAll());
+
         menu.Items.Add(new ToolStripSeparator());
 
         // Settings
@@ -722,6 +747,50 @@ internal sealed class TrayApplicationContext : ApplicationContext
         else
         {
             ShowOsd("Syncthing is not running", 3000);
+        }
+    }
+
+    private void MenuRescanAll()
+    {
+        if (IsOverclickGuarded(800)) return;
+        if (string.IsNullOrEmpty(_config.ApiKey))
+        {
+            ShowOsd("API Key required — set in Settings", 3000);
+            return;
+        }
+        try
+        {
+            var (status, _) = _api.Post("/rest/db/scan");
+            if (status == 200)
+                ShowOsd("Rescanning all folders...", 3000);
+            else
+                ShowOsd($"Rescan failed (HTTP {status})", 3000);
+        }
+        catch
+        {
+            ShowOsd("Rescan request failed", 3000);
+        }
+    }
+
+    private void MenuRescanFolder(string folderId)
+    {
+        if (IsOverclickGuarded(800)) return;
+        if (string.IsNullOrEmpty(_config.ApiKey))
+        {
+            ShowOsd("API Key required — set in Settings", 3000);
+            return;
+        }
+        try
+        {
+            var (status, _) = _api.Post($"/rest/db/scan?folder={Uri.EscapeDataString(folderId)}");
+            if (status == 200)
+                ShowOsd($"Rescanning {folderId}...", 3000);
+            else
+                ShowOsd($"Rescan failed (HTTP {status})", 3000);
+        }
+        catch
+        {
+            ShowOsd("Rescan request failed", 3000);
         }
     }
 

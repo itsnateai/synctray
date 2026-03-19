@@ -14,10 +14,10 @@ internal sealed class SettingsForm : Form
     private bool _disposed;
 
     // Controls we need to read on Save
-    private readonly CheckBox _cbDblClick;
+    private readonly ComboBox _cboDblClick;
+    private readonly ComboBox _cboMiddleClick;
     private readonly CheckBox _cbRunOnStartup;
     private readonly CheckBox _cbStartBrowser;
-    private readonly CheckBox _cbMiddleClick;
     private readonly CheckBox _cbNetPause;
     private readonly CheckBox _cbAutoUpdates;
     private readonly TextBox _edApiKey;
@@ -71,9 +71,19 @@ internal sealed class SettingsForm : Form
         AddDivider(0, y, sw);
         y += 10;
 
+        // Tray Click Actions
+        AddSectionHeader("Tray Click Actions", 16, ref y, sw);
+
+        AddLabel("Double-click:", 16, y, 90, _normalFont, DimColor);
+        _cboDblClick = AddComboBox(110, y - 2, 220, AppConfig.ClickActions, AppConfig.ActionValueToIndex(config.DblClickAction));
+        y += 28;
+
+        AddLabel("Middle-click:", 16, y, 90, _normalFont, DimColor);
+        _cboMiddleClick = AddComboBox(110, y - 2, 220, AppConfig.ClickActions, AppConfig.ActionValueToIndex(config.MiddleClickAction));
+        y += 30;
+
         // General
-        _cbDblClick = AddCheckBox("Double-click tray icon opens Web UI", 16, y, config.DblClickOpen);
-        y += 26;
+        AddSectionHeader("General", 16, ref y, sw);
 
         _cbRunOnStartup = AddCheckBox("Run on startup", 16, y, config.RunOnStartup);
         if (config.IsPortable)
@@ -85,9 +95,6 @@ internal sealed class SettingsForm : Form
         y += 26;
 
         _cbStartBrowser = AddCheckBox("Start browser when Syncthing launches", 16, y, config.StartBrowser);
-        y += 26;
-
-        _cbMiddleClick = AddCheckBox("Middle-click tray icon toggles pause/resume", 16, y, config.MiddleClickEnabled);
         y += 26;
 
         _cbNetPause = AddCheckBox("Auto-pause on public networks", 16, y, config.NetworkAutoPause);
@@ -311,10 +318,10 @@ internal sealed class SettingsForm : Form
 
     private void ApplySettings()
     {
-        _config.DblClickOpen = _cbDblClick.Checked;
+        _config.DblClickAction = AppConfig.ActionIndexToValue(_cboDblClick.SelectedIndex);
+        _config.MiddleClickAction = AppConfig.ActionIndexToValue(_cboMiddleClick.SelectedIndex);
         _config.RunOnStartup = _config.IsPortable ? false : _cbRunOnStartup.Checked;
         _config.StartBrowser = _cbStartBrowser.Checked;
-        _config.MiddleClickEnabled = _cbMiddleClick.Checked;
         _config.NetworkAutoPause = _cbNetPause.Checked;
         _config.AutoCheckUpdates = _cbAutoUpdates.Checked;
         _config.ApiKey = _edApiKey.Text;
@@ -429,6 +436,24 @@ internal sealed class SettingsForm : Form
         };
         Controls.Add(tb);
         return tb;
+    }
+
+    private ComboBox AddComboBox(int x, int y, int w, string[] items, int selectedIndex)
+    {
+        var cb = new ComboBox
+        {
+            Font = _normalFont,
+            ForeColor = FgColor,
+            BackColor = EditBgColor,
+            Location = new Point(x, y),
+            Width = w,
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            FlatStyle = FlatStyle.Flat,
+        };
+        cb.Items.AddRange(items);
+        cb.SelectedIndex = selectedIndex;
+        Controls.Add(cb);
+        return cb;
     }
 
     private void AddSectionHeader(string text, int x, ref int y, int sw)

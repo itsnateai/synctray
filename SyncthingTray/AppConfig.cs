@@ -9,8 +9,13 @@ internal sealed class AppConfig
 {
     public const string Version = "2.0.0";
 
+    // Click action values: "webui", "rescan", "pause", "none"
+    public static readonly string[] ClickActions = ["Open Web UI", "Rescan Now", "Pause/Resume", "Do Nothing"];
+    public static readonly string[] ClickActionValues = ["webui", "rescan", "pause", "none"];
+
     // Settings
-    public bool DblClickOpen { get; set; } = true;
+    public string DblClickAction { get; set; } = "webui";
+    public string MiddleClickAction { get; set; } = "pause";
     public bool RunOnStartup { get; set; }
     public bool StartBrowser { get; set; }
     public string ApiKey { get; set; } = string.Empty;
@@ -19,7 +24,6 @@ internal sealed class AppConfig
     public int StartupDelay { get; set; }
     public bool NetworkAutoPause { get; set; }
     public bool AutoCheckUpdates { get; set; }
-    public bool MiddleClickEnabled { get; set; } = true;
 
     public string SettingsFilePath { get; }
     public bool IsPortable { get; }
@@ -67,11 +71,19 @@ internal sealed class AppConfig
             foreach (var key in settings.Keys)
                 _configuredKeys.Add(key);
 
-            DblClickOpen = GetBool(settings, "DblClickOpen", true);
+            // New action-based settings (v2.1+)
+            DblClickAction = GetString(settings, "DblClickAction", string.Empty);
+            MiddleClickAction = GetString(settings, "MiddleClickAction", string.Empty);
+
+            // Backward compat: migrate old boolean settings if new keys absent
+            if (string.IsNullOrEmpty(DblClickAction))
+                DblClickAction = GetBool(settings, "DblClickOpen", true) ? "webui" : "none";
+            if (string.IsNullOrEmpty(MiddleClickAction))
+                MiddleClickAction = GetBool(settings, "MiddleClickEnabled", true) ? "pause" : "none";
+
             RunOnStartup = GetBool(settings, "RunOnStartup", false);
             StartBrowser = GetBool(settings, "StartBrowser", false);
             ApiKey = GetString(settings, "ApiKey", string.Empty);
-            MiddleClickEnabled = GetBool(settings, "MiddleClickEnabled", true);
             NetworkAutoPause = GetBool(settings, "NetworkAutoPause", false);
             AutoCheckUpdates = GetBool(settings, "AutoCheckUpdates", false);
 
@@ -99,8 +111,8 @@ internal sealed class AppConfig
     /// </summary>
     public void MarkAllConfigured()
     {
-        string[] allKeys = ["DblClickOpen", "RunOnStartup", "StartBrowser", "ApiKey",
-            "SyncExe", "WebUI", "StartupDelay", "NetworkAutoPause", "AutoCheckUpdates", "MiddleClickEnabled"];
+        string[] allKeys = ["DblClickAction", "MiddleClickAction", "RunOnStartup", "StartBrowser", "ApiKey",
+            "SyncExe", "WebUI", "StartupDelay", "NetworkAutoPause", "AutoCheckUpdates"];
         foreach (var key in allKeys)
             _configuredKeys.Add(key);
     }
@@ -112,7 +124,8 @@ internal sealed class AppConfig
 
         var sb = new StringBuilder();
         sb.AppendLine("[Settings]");
-        sb.AppendLine($"DblClickOpen={BoolToStr(DblClickOpen)}");
+        sb.AppendLine($"DblClickAction={DblClickAction}");
+        sb.AppendLine($"MiddleClickAction={MiddleClickAction}");
         sb.AppendLine($"RunOnStartup={BoolToStr(RunOnStartup)}");
         sb.AppendLine($"StartBrowser={BoolToStr(StartBrowser)}");
         sb.AppendLine($"ApiKey={ApiKey}");
@@ -121,7 +134,6 @@ internal sealed class AppConfig
         sb.AppendLine($"StartupDelay={StartupDelay}");
         sb.AppendLine($"NetworkAutoPause={BoolToStr(NetworkAutoPause)}");
         sb.AppendLine($"AutoCheckUpdates={BoolToStr(AutoCheckUpdates)}");
-        sb.AppendLine($"MiddleClickEnabled={BoolToStr(MiddleClickEnabled)}");
 
         try
         {
@@ -154,4 +166,13 @@ internal sealed class AppConfig
         => d.TryGetValue(key, out var v) ? v : def;
 
     private static string BoolToStr(bool b) => b ? "1" : "0";
+
+    public static int ActionValueToIndex(string value)
+    {
+        int idx = Array.IndexOf(ClickActionValues, value);
+        return idx >= 0 ? idx : 0;
+    }
+
+    public static string ActionIndexToValue(int index)
+        => index >= 0 && index < ClickActionValues.Length ? ClickActionValues[index] : "none";
 }
