@@ -118,7 +118,9 @@ Start ──→ Running ──→ Stopped (via Stop/Exit/Crash)
 
 ## Status
 
-**v2.1.0 — Rescan + configurable actions (2026-03-18)**
+**v2.1.0 — Final release (shipped 2026-03-18)**
+
+All audit items resolved (27/27). Tracking files deleted. See CHANGELOG.md for history.
 
 ## Changelog
 
