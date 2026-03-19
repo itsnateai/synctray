@@ -2,7 +2,8 @@ namespace SyncthingTray;
 
 /// <summary>
 /// Custom ToolStripRenderer that applies the dark theme (matching Settings/Help forms)
-/// to the tray context menu.
+/// to the tray context menu. Brushes and pens are cached as static fields to avoid
+/// GDI object churn on every paint call (important for 24/7 operation).
 /// </summary>
 internal sealed class DarkMenuRenderer : ToolStripProfessionalRenderer
 {
@@ -11,15 +12,19 @@ internal sealed class DarkMenuRenderer : ToolStripProfessionalRenderer
     private static readonly Color HighlightBg = Color.FromArgb(0x35, 0x35, 0x50);
     private static readonly Color SeparatorColor = Color.FromArgb(0x40, 0x40, 0x50);
 
+    // Cached GDI objects — colors are fixed, so these live for the process lifetime
+    private static readonly SolidBrush BgBrush = new(MenuBg);
+    private static readonly SolidBrush HighlightBrush = new(HighlightBg);
+    private static readonly Pen SeparatorPen = new(SeparatorColor);
+    private static readonly Pen BorderPen = new(SeparatorColor);
+
     public DarkMenuRenderer() : base(new DarkColorTable()) { }
 
     protected override void OnRenderMenuItemBackground(ToolStripItemRenderEventArgs e)
     {
-        var g = e.Graphics;
         var rect = new Rectangle(Point.Empty, e.Item.Size);
-        var color = e.Item.Selected && e.Item.Enabled ? HighlightBg : MenuBg;
-        using var brush = new SolidBrush(color);
-        g.FillRectangle(brush, rect);
+        var brush = e.Item.Selected && e.Item.Enabled ? HighlightBrush : BgBrush;
+        e.Graphics.FillRectangle(brush, rect);
     }
 
     protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e)
@@ -32,28 +37,24 @@ internal sealed class DarkMenuRenderer : ToolStripProfessionalRenderer
     {
         var bounds = new Rectangle(Point.Empty, e.Item.Size);
         int y = bounds.Height / 2;
-        using var pen = new Pen(SeparatorColor);
-        e.Graphics.DrawLine(pen, bounds.Left + 4, y, bounds.Right - 4, y);
+        e.Graphics.DrawLine(SeparatorPen, bounds.Left + 4, y, bounds.Right - 4, y);
     }
 
     protected override void OnRenderToolStripBackground(ToolStripRenderEventArgs e)
     {
-        using var brush = new SolidBrush(MenuBg);
-        e.Graphics.FillRectangle(brush, e.AffectedBounds);
+        e.Graphics.FillRectangle(BgBrush, e.AffectedBounds);
     }
 
     protected override void OnRenderToolStripBorder(ToolStripRenderEventArgs e)
     {
-        using var pen = new Pen(SeparatorColor);
         var rect = new Rectangle(0, 0, e.ToolStrip.Width - 1, e.ToolStrip.Height - 1);
-        e.Graphics.DrawRectangle(pen, rect);
+        e.Graphics.DrawRectangle(BorderPen, rect);
     }
 
     protected override void OnRenderImageMargin(ToolStripRenderEventArgs e)
     {
         // Suppress default image margin rendering (white strip on left)
-        using var brush = new SolidBrush(MenuBg);
-        e.Graphics.FillRectangle(brush, e.AffectedBounds);
+        e.Graphics.FillRectangle(BgBrush, e.AffectedBounds);
     }
 
     private sealed class DarkColorTable : ProfessionalColorTable

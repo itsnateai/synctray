@@ -10,6 +10,7 @@ internal sealed class SettingsForm : Form
     private readonly AppConfig _config;
     private readonly SyncthingApi _api;
     private readonly Action _onSaved;
+    private readonly OsdToolTip _osd;
     private bool _disposed;
 
     // Controls we need to read on Save
@@ -40,10 +41,11 @@ internal sealed class SettingsForm : Form
     private static readonly Color DividerColor = Color.FromArgb(0x40, 0x40, 0x50);
     private static readonly Color EditBgColor = Color.FromArgb(0x2A, 0x2A, 0x3E);
 
-    public SettingsForm(AppConfig config, SyncthingApi api, Action onSaved)
+    public SettingsForm(AppConfig config, SyncthingApi api, OsdToolTip osd, Action onSaved)
     {
         _config = config;
         _api = api;
+        _osd = osd;
         _onSaved = onSaved;
 
         _boldFont = new Font("Segoe UI", 9f, FontStyle.Bold);
@@ -198,13 +200,13 @@ internal sealed class SettingsForm : Form
         Controls.Add(btnCheck);
         y += 34;
 
-        // Save / Cancel
+        // Save / Apply / Cancel
         var btnSave = new Button
         {
             Text = "Save",
             Font = _normalFont,
             Location = new Point(16, y),
-            Size = new Size(158, 30),
+            Size = new Size(104, 30),
             FlatStyle = FlatStyle.Flat,
             ForeColor = FgColor,
             BackColor = BgColor,
@@ -212,12 +214,25 @@ internal sealed class SettingsForm : Form
         btnSave.Click += OnSave;
         Controls.Add(btnSave);
 
+        var btnApply = new Button
+        {
+            Text = "Apply",
+            Font = _normalFont,
+            Location = new Point(126, y),
+            Size = new Size(104, 30),
+            FlatStyle = FlatStyle.Flat,
+            ForeColor = FgColor,
+            BackColor = BgColor,
+        };
+        btnApply.Click += OnApply;
+        Controls.Add(btnApply);
+
         var btnCancel = new Button
         {
             Text = "Cancel",
             Font = _normalFont,
-            Location = new Point(182, y),
-            Size = new Size(158, 30),
+            Location = new Point(236, y),
+            Size = new Size(104, 30),
             FlatStyle = FlatStyle.Flat,
             ForeColor = FgColor,
             BackColor = BgColor,
@@ -291,10 +306,10 @@ internal sealed class SettingsForm : Form
             catch { /* best-effort */ }
         }
 
-        MessageBox.Show(this, results, "Config Check", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        _osd.ShowMessage(results.Replace("\r\n", " | ").TrimEnd(' ', '|'), 5000);
     }
 
-    private void OnSave(object? sender, EventArgs e)
+    private void ApplySettings()
     {
         _config.DblClickOpen = _cbDblClick.Checked;
         _config.RunOnStartup = _config.IsPortable ? false : _cbRunOnStartup.Checked;
@@ -339,7 +354,18 @@ internal sealed class SettingsForm : Form
         }
 
         _onSaved();
+    }
+
+    private void OnSave(object? sender, EventArgs e)
+    {
+        ApplySettings();
         Close();
+    }
+
+    private void OnApply(object? sender, EventArgs e)
+    {
+        ApplySettings();
+        _osd.ShowMessage("Settings applied", 3000);
     }
 
     // --- UI Helpers ---
