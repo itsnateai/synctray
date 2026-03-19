@@ -21,7 +21,7 @@ internal sealed class AppConfig
     public string ApiKey { get; set; } = string.Empty;
     public string SyncExe { get; set; } = string.Empty;
     public string WebUI { get; set; } = "http://localhost:8384";
-    public int StartupDelay { get; set; }
+    public int StartupDelay { get; set; } = 20;
     public bool NetworkAutoPause { get; set; }
     public bool AutoCheckUpdates { get; set; }
 

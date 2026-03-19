@@ -55,7 +55,7 @@ internal sealed class SettingsForm : Form
         _btnFont = new Font("Segoe UI", 8f);
         _subFont = new Font("Segoe UI", 8f);
 
-        Text = "SyncthingTray Settings";
+        Text = $"SyncthingTray v{AppConfig.Version} \u2014 Settings";
         FormBorderStyle = FormBorderStyle.FixedToolWindow;
         StartPosition = FormStartPosition.CenterScreen;
         TopMost = true;
@@ -64,23 +64,17 @@ internal sealed class SettingsForm : Form
         AutoScaleMode = AutoScaleMode.Dpi;
 
         int sw = 390;
-        int y = 14;
-
-        // Title
-        AddLabel($"SyncthingTray v{AppConfig.Version}", 16, y, 328, _boldFont, FgColor);
-        y += 22;
-        AddDivider(0, y, sw);
-        y += 10;
+        int y = 10;
 
         // Tray Click Actions
         AddSectionHeader("Tray Click Actions", 16, ref y, sw);
 
-        AddLabel("Double-click:", 16, y, 90, _normalFont, DimColor);
-        _cboDblClick = AddComboBox(112, y - 2, 250, AppConfig.ClickActions, AppConfig.ActionValueToIndex(config.DblClickAction));
-        y += 28;
+        AddLabel("Double-click:", 16, y + 2, 90, _normalFont, DimColor);
+        _cboDblClick = AddComboBox(112, y, 250, AppConfig.ClickActions, AppConfig.ActionValueToIndex(config.DblClickAction));
+        y += 30;
 
-        AddLabel("Middle-click:", 16, y, 90, _normalFont, DimColor);
-        _cboMiddleClick = AddComboBox(112, y - 2, 250, AppConfig.ClickActions, AppConfig.ActionValueToIndex(config.MiddleClickAction));
+        AddLabel("Middle-click:", 16, y + 2, 90, _normalFont, DimColor);
+        _cboMiddleClick = AddComboBox(112, y, 250, AppConfig.ClickActions, AppConfig.ActionValueToIndex(config.MiddleClickAction));
         y += 30;
 
         // General
@@ -126,7 +120,24 @@ internal sealed class SettingsForm : Form
         y += 28;
 
         AddLabel("Web UI:", 16, y, 70, _normalFont, DimColor);
-        _edWebUI = AddTextBox(90, y - 2, 270, config.WebUI, true);
+        _edWebUI = AddTextBox(90, y - 2, 220, config.WebUI, true);
+        var btnOpenWebUI = new Button
+        {
+            Text = "Open",
+            Font = _btnFont,
+            Location = new Point(314, y - 3),
+            Size = new Size(50, 24),
+            FlatStyle = FlatStyle.Flat,
+            ForeColor = FgColor,
+            BackColor = BgColor,
+        };
+        btnOpenWebUI.Click += (_, _) =>
+        {
+            var url = _edWebUI.Text.Trim();
+            if (url.Length > 0)
+                using (var p = Process.Start(new ProcessStartInfo(url) { UseShellExecute = true })) { }
+        };
+        Controls.Add(btnOpenWebUI);
         y += 30;
 
         // API section
@@ -477,10 +488,11 @@ internal sealed class SettingsForm : Form
 
     private void AddSectionHeader(string text, int x, ref int y, int sw)
     {
+        y += 4;
         AddLabel(text, x, y, text.Length * 8 + 10, _sectionFont, DimColor);
         int labelEnd = x + text.Length * 8 + 10;
-        AddDivider(labelEnd, y + 4, sw - labelEnd - 10);
-        y += 16;
+        AddDivider(labelEnd, y + 6, sw - labelEnd - 10);
+        y += 22;
     }
 
     private void AddLinkButton(string text, int x, int y, int w, string url)

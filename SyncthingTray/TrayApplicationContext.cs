@@ -49,6 +49,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private bool _lastMenuPaused;
     private int _lastMenuFolderCount;
     private string _lastMenuUpdate = string.Empty;
+    private string _lastMenuStatus = string.Empty;
+    private string _lastMenuDetail = string.Empty;
+    private int _lastMenuConnected = -1;
+    private int _lastMenuTotal = -1;
     private bool _menuBuilt;
 
     // Cached per-cycle process check (avoid repeated Process.GetProcessesByName allocations)
@@ -262,7 +266,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
             && running == _lastMenuRunning
             && _paused == _lastMenuPaused
             && _folders.Length == _lastMenuFolderCount
-            && _updateAvailable == _lastMenuUpdate)
+            && _updateAvailable == _lastMenuUpdate
+            && _syncStatus == _lastMenuStatus
+            && _syncDetail == _lastMenuDetail
+            && _connectedCount == _lastMenuConnected
+            && _totalDevices == _lastMenuTotal)
         {
             return;
         }
@@ -271,13 +279,33 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _lastMenuPaused = _paused;
         _lastMenuFolderCount = _folders.Length;
         _lastMenuUpdate = _updateAvailable;
+        _lastMenuStatus = _syncStatus;
+        _lastMenuDetail = _syncDetail;
+        _lastMenuConnected = _connectedCount;
+        _lastMenuTotal = _totalDevices;
 
         var oldMenu = _trayIcon.ContextMenuStrip;
         var menu = new ContextMenuStrip { Renderer = DarkRenderer };
 
-        // Title
+        // Title + status line
         var titleItem = menu.Items.Add(TitleString);
         titleItem.Enabled = false;
+
+        var statusText = running
+            ? _syncStatus switch
+            {
+                "paused" => "Paused",
+                "idle" => _syncDetail.Length > 0 ? $"Idle — {_syncDetail}" : "Idle",
+                "syncing" => _syncDetail.Length > 0 ? $"Syncing — {_syncDetail}" : "Syncing...",
+                "error" => _syncDetail.Length > 0 ? $"Error — {_syncDetail}" : "Error",
+                _ => "Running",
+            }
+            : "Stopped";
+        if (running && _totalDevices > 0)
+            statusText += $" | {_connectedCount}/{_totalDevices} devices";
+
+        var statusItem = menu.Items.Add($"  {statusText}");
+        statusItem.Enabled = false;
         menu.Items.Add(new ToolStripSeparator());
 
         // WebUI link
@@ -843,6 +871,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private bool LaunchSyncthing()
     {
+        if (!File.Exists(_config.SyncExe))
+        {
+            ShowOsd($"syncthing.exe not found: {_config.SyncExe}", 5000);
+            return false;
+        }
+
         try
         {
             var args = _config.StartBrowser ? string.Empty : "--no-browser";
@@ -856,12 +890,19 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 UseShellExecute = false,
                 CreateNoWindow = true,
             };
-            using var p = Process.Start(psi);
+            var p = Process.Start(psi);
+            if (p is null)
+            {
+                ShowOsd("Failed to start syncthing process", 5000);
+                return false;
+            }
+            p.Dispose();
             InvalidateRunningCache();
             return true;
         }
-        catch
+        catch (Exception ex)
         {
+            ShowOsd($"Launch failed: {ex.Message}", 5000);
             return false;
         }
     }
