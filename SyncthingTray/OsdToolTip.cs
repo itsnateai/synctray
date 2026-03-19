@@ -60,16 +60,12 @@ internal sealed class OsdToolTip : Form
         var textSize = TextRenderer.MeasureText(text, _label.Font, new Size(400, 0), TextFormatFlags.WordBreak);
         Size = new Size(textSize.Width + 20, textSize.Height + 16);
 
-        // Position near cursor, offset so it doesn't steal focus
-        var pos = Cursor.Position;
-        pos.Offset(16, 16);
-
-        // Keep on screen
-        var screen = Screen.FromPoint(Cursor.Position).WorkingArea;
-        if (pos.X + Width > screen.Right)
-            pos.X = screen.Right - Width;
-        if (pos.Y + Height > screen.Bottom)
-            pos.Y = screen.Bottom - Height;
+        // Position just above the system tray (bottom-right of working area)
+        var screen = Screen.PrimaryScreen?.WorkingArea ?? Screen.FromPoint(Cursor.Position).WorkingArea;
+        var pos = new Point(
+            screen.Right - Width - 8,
+            screen.Bottom - Height - 8
+        );
 
         Location = pos;
 
