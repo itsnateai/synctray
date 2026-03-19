@@ -7,7 +7,7 @@ namespace SyncthingTray;
 /// </summary>
 internal sealed class AppConfig
 {
-    public const string Version = "1.6.0";
+    public const string Version = "2.0.0";
 
     // Settings
     public bool DblClickOpen { get; set; } = true;
