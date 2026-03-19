@@ -18,10 +18,13 @@ jobs:
           dotnet-version: 8.0.404
 
       - name: Restore dependencies
-        run: dotnet restore SyncthingTray/SyncthingTray.csproj
+        run: dotnet restore
 
       - name: Build
-        run: dotnet build SyncthingTray/SyncthingTray.csproj -c Release --no-restore
+        run: dotnet build -c Release --no-restore
+
+      - name: Test
+        run: dotnet test --no-restore --verbosity minimal
 
       - name: Publish single-file
         run: dotnet publish SyncthingTray/SyncthingTray.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true --no-restore

@@ -32,10 +32,13 @@ publish/
 *.orig
 *.rej
 
+# Internal / Agent
+CLAUDE.md
+FINAL_REPORT.md
+
 # Task Management
 AUDIT_TASKS.md
 TODO_LIST.md
 SCHEDULED_TASKS.md
 ASSUMPTIONS.md
 WORKFLOW_STATE.md
-FINAL_REPORT.md
