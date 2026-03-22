@@ -38,6 +38,17 @@ Grab the latest from the [Releases](https://github.com/itsnateai/synctray/releas
 
 - **`SyncthingTray.exe`** — self-contained, no .NET runtime needed (~147 MB)
 
+### Alternative install methods (coming soon)
+
+```powershell
+# Scoop
+scoop bucket add extras
+scoop install syncthingtray
+
+# WinGet
+winget install itsnateai.SyncthingTray
+```
+
 ## Requirements
 
 - Windows 10/11
