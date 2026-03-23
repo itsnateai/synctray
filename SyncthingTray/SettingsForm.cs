@@ -207,7 +207,7 @@ internal sealed class SettingsForm : Form
     {
         AddSectionHeader("Updates", 16, ref y, sw);
 
-        _cbAutoUpdates = AddCheckBox("Check for updates (daily)", 16, y, _config.AutoCheckUpdates);
+        _cbAutoUpdates = AddCheckBox("Check for Syncthing updates (daily)", 16, y, _config.AutoCheckUpdates);
         _cbAutoUpdates.Width = 220;
         var btnCheckNow = new Button
         {
