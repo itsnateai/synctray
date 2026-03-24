@@ -27,7 +27,7 @@ jobs:
         run: dotnet test --no-restore --verbosity minimal
 
       - name: Publish single-file
-        run: dotnet publish SyncthingTray/SyncthingTray.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true --no-restore
+        run: dotnet publish SyncthingTray/SyncthingTray.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
