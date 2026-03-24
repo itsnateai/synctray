@@ -1056,18 +1056,27 @@ internal sealed class TrayApplicationContext : ApplicationContext
         if (now - _cachedRunningTick < 2000)
             return _cachedRunning;
 
-        var procs = Process.GetProcessesByName("syncthing");
-        bool running = false;
-        foreach (var p in procs)
+        try
         {
-            using (p)
+            var procs = Process.GetProcessesByName("syncthing");
+            bool running = false;
+            foreach (var p in procs)
             {
-                running = true;
+                using (p)
+                {
+                    running = true;
+                }
             }
+            _cachedRunning = running;
+            _cachedRunningTick = now;
         }
-        _cachedRunning = running;
-        _cachedRunningTick = now;
-        return running;
+        catch (OutOfMemoryException)
+        {
+            // Under extreme memory pressure, process enumeration can fail.
+            // Return last known state rather than crashing the tray app.
+            _cachedRunningTick = now;
+        }
+        return _cachedRunning;
     }
 
     /// <summary>
