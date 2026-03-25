@@ -924,6 +924,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 UseShellExecute = false,
                 CreateNoWindow = true,
             };
+            // Limit Syncthing's Go runtime to 2 OS threads — reduces memory/CPU
+            // footprint on a machine already running Claude, Docker, Semgrep, etc.
+            psi.Environment["GOMAXPROCS"] = "2";
             var p = Process.Start(psi);
             if (p is null)
             {
@@ -1047,8 +1050,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     /// <summary>
     /// Checks if syncthing.exe is running. Result is cached for 2 seconds to avoid
-    /// repeated Process.GetProcessesByName allocations within the same poll cycle
-    /// (UpdateTrayIcon, PollSyncStatus, and BuildMenu can all call this in sequence).
+    /// repeated lookups within the same poll cycle (UpdateTrayIcon, PollSyncStatus,
+    /// and BuildMenu can all call this in sequence).
+    /// When we launched syncthing ourselves (_launchedPid != 0), uses O(1)
+    /// GetProcessById instead of enumerating the entire process table.
     /// </summary>
     private bool IsSyncthingRunning()
     {
@@ -1058,13 +1063,33 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         try
         {
-            var procs = Process.GetProcessesByName("syncthing");
-            bool running = false;
-            foreach (var p in procs)
+            bool running;
+            if (_launchedPid != 0)
             {
-                using (p)
+                // Fast path: O(1) kernel handle lookup by PID
+                try
                 {
-                    running = true;
+                    using var p = Process.GetProcessById(_launchedPid);
+                    running = !p.HasExited;
+                }
+                catch (ArgumentException)
+                {
+                    // PID no longer exists
+                    running = false;
+                    _launchedPid = 0;
+                }
+            }
+            else
+            {
+                // Slow path: only when syncthing was already running before we started
+                var procs = Process.GetProcessesByName("syncthing");
+                running = false;
+                foreach (var p in procs)
+                {
+                    using (p)
+                    {
+                        running = true;
+                    }
                 }
             }
             _cachedRunning = running;
