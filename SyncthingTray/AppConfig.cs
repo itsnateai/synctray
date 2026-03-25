@@ -44,6 +44,8 @@ internal sealed class AppConfig
     {
         SettingsFilePath = Path.Combine(appDirectory, "SyncthingTray.ini");
         SyncExe = Path.Combine(appDirectory, "syncthing.exe");
+        if (!File.Exists(SyncExe))
+            SyncExe = DiscoverSyncExe() ?? SyncExe;
 
         // Portable mode detection
         try
@@ -176,6 +178,52 @@ internal sealed class AppConfig
         => d.TryGetValue(key, out var v) ? v : def;
 
     private static string BoolToStr(bool b) => b ? "1" : "0";
+
+    /// <summary>
+    /// Searches common locations for syncthing.exe when it's not next to the tray app.
+    /// </summary>
+    private static string? DiscoverSyncExe()
+    {
+        var candidates = new List<string>();
+        var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+
+        // PATH lookup
+        var pathVar = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+        foreach (var dir in pathVar.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+        {
+            candidates.Add(Path.Combine(dir, "syncthing.exe"));
+        }
+
+        // Common install locations
+        candidates.Add(Path.Combine(localAppData, "Syncthing", "syncthing.exe"));
+        candidates.Add(Path.Combine(programFiles, "Syncthing", "syncthing.exe"));
+
+        // Chocolatey
+        var chocoDir = Environment.GetEnvironmentVariable("ChocolateyInstall") ?? @"C:\ProgramData\chocolatey";
+        candidates.Add(Path.Combine(chocoDir, "bin", "syncthing.exe"));
+
+        // Scoop
+        candidates.Add(Path.Combine(userProfile, "scoop", "apps", "syncthing", "current", "syncthing.exe"));
+
+        // Search user profile for syncthing* folders (depth-limited to 3 levels)
+        try
+        {
+            foreach (var file in Directory.EnumerateFiles(userProfile, "syncthing.exe", new EnumerationOptions
+            {
+                RecurseSubdirectories = true,
+                MaxRecursionDepth = 3,
+                IgnoreInaccessible = true,
+            }))
+            {
+                candidates.Add(file);
+            }
+        }
+        catch { /* ACL or IO errors — skip */ }
+
+        return candidates.FirstOrDefault(File.Exists);
+    }
 
     public static int ActionValueToIndex(string value)
     {

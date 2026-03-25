@@ -123,8 +123,22 @@ public class AppConfigTests
     [TestMethod]
     public void SyncExe_DefaultsToAppDirectory()
     {
+        // Place a dummy exe so the co-located default wins over discovery
+        var dummyExe = Path.Combine(_tempDir, "syncthing.exe");
+        File.WriteAllText(dummyExe, "dummy");
         var config = new AppConfig(_tempDir);
-        Assert.AreEqual(Path.Combine(_tempDir, "syncthing.exe"), config.SyncExe);
+        Assert.AreEqual(dummyExe, config.SyncExe);
+    }
+
+    [TestMethod]
+    public void SyncExe_DiscoversFallbackWhenNotCoLocated()
+    {
+        // No syncthing.exe next to the app — should either discover one or keep the default path
+        var config = new AppConfig(_tempDir);
+        Assert.IsTrue(config.SyncExe.EndsWith("syncthing.exe", StringComparison.OrdinalIgnoreCase));
+        // If discovery found a real one, it must exist
+        if (config.SyncExe != Path.Combine(_tempDir, "syncthing.exe"))
+            Assert.IsTrue(File.Exists(config.SyncExe), $"Discovered path should exist: {config.SyncExe}");
     }
 
     [TestMethod]
