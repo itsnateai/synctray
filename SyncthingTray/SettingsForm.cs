@@ -65,7 +65,7 @@ internal sealed class SettingsForm : Form
         ShowInTaskbar = false;
         AutoScaleMode = AutoScaleMode.Dpi;
 
-        int sw = 390;
+        int sw = 410;
         int y = 10;
 
         BuildClickActionsSection(ref y, sw);
@@ -271,13 +271,31 @@ internal sealed class SettingsForm : Form
     private void BuildButtonRow(ref int y, int sw)
     {
         AddLinkButton("GitHub", 16, y, 68, "https://github.com/itsnateai/synctray");
-        AddLinkButton("Syncthing", 88, y, 68, "https://github.com/syncthing/syncthing");
+
+        var btnUpdate = new Button
+        {
+            Text = "App Update",
+            Font = _btnFont,
+            Location = new Point(88, y),
+            Size = new Size(76, 24),
+            FlatStyle = FlatStyle.Flat,
+            ForeColor = FgColor,
+            BackColor = BgColor,
+        };
+        btnUpdate.Click += (_, _) =>
+        {
+            using var dlg = new UpdateDialog();
+            dlg.ShowDialog(this);
+        };
+        Controls.Add(btnUpdate);
+
+        AddLinkButton("Syncthing", 168, y, 68, "https://github.com/syncthing/syncthing");
 
         var btnHelp = new Button
         {
             Text = "Help",
             Font = _btnFont,
-            Location = new Point(160, y),
+            Location = new Point(240, y),
             Size = new Size(58, 24),
             FlatStyle = FlatStyle.Flat,
             ForeColor = FgColor,
@@ -294,8 +312,8 @@ internal sealed class SettingsForm : Form
         {
             Text = "Check Config",
             Font = _btnFont,
-            Location = new Point(232, y),
-            Size = new Size(130, 24),
+            Location = new Point(302, y),
+            Size = new Size(100, 24),
             FlatStyle = FlatStyle.Flat,
             ForeColor = FgColor,
             BackColor = BgColor,
