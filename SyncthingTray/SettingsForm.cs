@@ -274,10 +274,10 @@ internal sealed class SettingsForm : Form
 
         var btnUpdate = new Button
         {
-            Text = "App Update",
+            Text = "Update",
             Font = _btnFont,
             Location = new Point(88, y),
-            Size = new Size(76, 24),
+            Size = new Size(58, 24),
             FlatStyle = FlatStyle.Flat,
             ForeColor = FgColor,
             BackColor = BgColor,
@@ -289,13 +289,13 @@ internal sealed class SettingsForm : Form
         };
         Controls.Add(btnUpdate);
 
-        AddLinkButton("Syncthing", 168, y, 68, "https://github.com/syncthing/syncthing");
+        AddLinkButton("Syncthing", 150, y, 68, "https://github.com/syncthing/syncthing");
 
         var btnHelp = new Button
         {
             Text = "Help",
             Font = _btnFont,
-            Location = new Point(240, y),
+            Location = new Point(222, y),
             Size = new Size(58, 24),
             FlatStyle = FlatStyle.Flat,
             ForeColor = FgColor,
@@ -312,7 +312,7 @@ internal sealed class SettingsForm : Form
         {
             Text = "Check Config",
             Font = _btnFont,
-            Location = new Point(302, y),
+            Location = new Point(284, y),
             Size = new Size(100, 24),
             FlatStyle = FlatStyle.Flat,
             ForeColor = FgColor,
