@@ -41,10 +41,6 @@ Grab the latest from the [Releases](https://github.com/itsnateai/synctray/releas
 ### Alternative install methods (coming soon)
 
 ```powershell
-# Scoop
-scoop bucket add extras
-scoop install syncthingtray
-
 # WinGet
 winget install itsnateai.SyncthingTray
 ```
