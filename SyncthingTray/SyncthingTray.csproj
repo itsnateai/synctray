@@ -5,7 +5,7 @@
     <TargetFramework>net8.0-windows</TargetFramework>
     <UseWindowsForms>true</UseWindowsForms>
     <ApplicationIcon>Resources\sync.ico</ApplicationIcon>
-    <Version>2.2.2</Version>
+    <Version>2.2.3</Version>
     <AssemblyName>SyncthingTray</AssemblyName>
     <RootNamespace>SyncthingTray</RootNamespace>
     <Nullable>enable</Nullable>
