@@ -142,7 +142,15 @@ internal sealed class UpdateDialog : Form
             _progressFill.Size = new Size(barW, 18);
         };
 
-        Shown += async (_, _) => await CheckForUpdateAsync();
+        Shown += async (_, _) =>
+        {
+            if (IsWingetManaged())
+            {
+                ShowWingetNotice();
+                return;
+            }
+            await CheckForUpdateAsync();
+        };
     }
 
     private static HttpClient CreateHttpClient()
@@ -272,6 +280,14 @@ internal sealed class UpdateDialog : Form
         _progressOuter.Visible = true;
         _progressFill.Location = new Point(0, 0);
         _lblStatus.Text = $"Downloading {AppName} {_remoteVersion}...";
+
+        // Validate download URL origin before downloading
+        if (!_downloadUrl!.StartsWith("https://github.com/itsnateai/", StringComparison.OrdinalIgnoreCase) &&
+            !_downloadUrl.StartsWith("https://objects.githubusercontent.com/", StringComparison.OrdinalIgnoreCase))
+        {
+            ShowError("Update failed: download URL is not from the expected source.", _downloadUrl);
+            return;
+        }
 
         _cts?.Dispose();
         _cts = new CancellationTokenSource();
@@ -481,6 +497,23 @@ internal sealed class UpdateDialog : Form
             dismiss.Start();
         };
         timer.Start();
+    }
+
+    // ─── Winget Detection ──────────────────────────────────────
+
+    private static bool IsWingetManaged() =>
+        (Environment.ProcessPath ?? "").Contains(@"Microsoft\WinGet\Packages", StringComparison.OrdinalIgnoreCase);
+
+    private void ShowWingetNotice()
+    {
+        _marqueeTimer.Stop();
+        _progressOuter.Visible = false;
+        _lblStatus.Text = "This installation is managed by winget.";
+        _lblStatus.ForeColor = WarnColor;
+        _lblDetail.Text = "Use:  winget upgrade itsnateai.SyncthingTray";
+        _btnAction.Visible = false;
+        _btnCancel.Text = "OK";
+        _btnCancel.Location = new Point(170, 112);
     }
 
     // ─── Helpers ────────────────────────────────────────────────

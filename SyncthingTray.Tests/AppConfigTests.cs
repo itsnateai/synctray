@@ -63,7 +63,7 @@ public class AppConfigTests
         config.RunOnStartup = true;
         config.StartBrowser = true;
         config.ApiKey = "my-api-key";
-        config.WebUI = "https://custom:8443";
+        config.WebUI = "https://localhost:8443";
         config.StartupDelay = 30;
         config.NetworkAutoPause = true;
         config.AutoCheckUpdates = true;
@@ -76,7 +76,7 @@ public class AppConfigTests
         Assert.IsTrue(config2.RunOnStartup);
         Assert.IsTrue(config2.StartBrowser);
         Assert.AreEqual("my-api-key", config2.ApiKey);
-        Assert.AreEqual("https://custom:8443", config2.WebUI);
+        Assert.AreEqual("https://localhost:8443", config2.WebUI);
         Assert.AreEqual(30, config2.StartupDelay);
         Assert.IsTrue(config2.NetworkAutoPause);
         Assert.IsTrue(config2.AutoCheckUpdates);

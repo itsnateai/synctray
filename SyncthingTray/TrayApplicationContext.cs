@@ -699,7 +699,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void OpenWebUI()
     {
-        using var p = Process.Start(new ProcessStartInfo(_config.WebUI) { UseShellExecute = true });
+        var url = _config.WebUI;
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || (uri.Scheme != "http" && uri.Scheme != "https"))
+            return;
+        using var p = Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
     }
 
     private void OpenFolder(string path)

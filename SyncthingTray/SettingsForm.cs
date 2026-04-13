@@ -159,7 +159,7 @@ internal sealed class SettingsForm : Form
         btnOpenWebUI.Click += (_, _) =>
         {
             var url = _edWebUI.Text.Trim();
-            if (url.Length > 0)
+            if (url.Length > 0 && Uri.TryCreate(url, UriKind.Absolute, out var uri) && (uri.Scheme == "http" || uri.Scheme == "https"))
                 using (var p = Process.Start(new ProcessStartInfo(url) { UseShellExecute = true })) { }
         };
         Controls.Add(btnOpenWebUI);
@@ -439,7 +439,7 @@ internal sealed class SettingsForm : Form
         _config.StopOnExit = _cbStopOnExit.Checked;
         _config.ApiKey = _edApiKey.Text;
         _config.SyncExe = _edSyncExe.Text;
-        _config.WebUI = _edWebUI.Text;
+        _config.WebUI = AppConfig.ValidateWebUI(_edWebUI.Text);
 
         if (int.TryParse(_edDelay.Text, out int delay))
             _config.StartupDelay = delay;

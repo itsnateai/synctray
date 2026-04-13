@@ -45,7 +45,7 @@ internal sealed class AppConfig
         SettingsFilePath = Path.Combine(appDirectory, "SyncthingTray.ini");
         SyncExe = Path.Combine(appDirectory, "syncthing.exe");
         if (!File.Exists(SyncExe))
-            SyncExe = DiscoverSyncExe() ?? SyncExe;
+            SyncExe = ValidateSyncExe(DiscoverSyncExe()) ?? SyncExe;
 
         // Portable mode detection
         try
@@ -95,11 +95,11 @@ internal sealed class AppConfig
 
             var exe = GetString(settings, "SyncExe", string.Empty);
             if (!string.IsNullOrEmpty(exe))
-                SyncExe = exe;
+                SyncExe = ValidateSyncExe(exe) ?? SyncExe;
 
             var webUi = GetString(settings, "WebUI", string.Empty);
             if (!string.IsNullOrEmpty(webUi))
-                WebUI = webUi;
+                WebUI = ValidateWebUI(webUi);
 
             if (int.TryParse(GetString(settings, "StartupDelay", "0"), out int delay))
                 StartupDelay = delay;
@@ -154,6 +154,34 @@ internal sealed class AppConfig
         {
             return false;
         }
+    }
+
+    /// <summary>
+    /// Validate WebUI is a safe localhost URL (SSRF prevention).
+    /// </summary>
+    internal static string ValidateWebUI(string url)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return "http://localhost:8384";
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)) return "http://localhost:8384";
+        if (uri.Scheme != "http" && uri.Scheme != "https") return "http://localhost:8384";
+        if (uri.Host != "localhost" && uri.Host != "127.0.0.1" && uri.Host != "::1")
+            return "http://localhost:8384";
+        return url;
+    }
+
+    /// <summary>
+    /// Validate SyncExe points to an actual syncthing binary.
+    /// </summary>
+    private static string? ValidateSyncExe(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path)) return null;
+        // Reject path traversal
+        if (path.Contains("..")) return null;
+        // Must be named syncthing.exe (case-insensitive)
+        var fileName = Path.GetFileName(path);
+        if (!fileName.Equals("syncthing.exe", StringComparison.OrdinalIgnoreCase)) return null;
+        if (!File.Exists(path)) return null;
+        return path;
     }
 
     private static Dictionary<string, string> ParseIni(string[] lines)
