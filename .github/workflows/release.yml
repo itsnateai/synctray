@@ -32,7 +32,7 @@ jobs:
           Set-Content SyncthingTray/SyncthingTray.csproj $csproj
 
       - name: Build self-contained
-        run: dotnet publish SyncthingTray/SyncthingTray.csproj -c Release --self-contained true -r win-x64
+        run: dotnet publish SyncthingTray/SyncthingTray.csproj -c Release --self-contained true -r win-x64 -p:PublishSingleFile=true
 
       - name: Prepare assets
         shell: bash

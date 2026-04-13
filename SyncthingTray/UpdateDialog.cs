@@ -378,8 +378,8 @@ internal sealed class UpdateDialog : Form
             return false;
         }
 
-        // Minimum size sanity check for self-contained .NET exe
-        if (downloaded < 1_000_000)
+        // Minimum size sanity check — reject truncated/empty downloads
+        if (downloaded < 100_000)
         {
             TryDelete(destPath);
             ShowError("Downloaded file is too small.",
