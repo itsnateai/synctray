@@ -179,7 +179,7 @@ internal sealed class SettingsForm : Form
     {
         AddSectionHeader("Discovery", 16, ref y, sw);
 
-        bool curGlobal = true, curLocal = true, curRelay = true;
+        bool curGlobal = false, curLocal = false, curRelay = false;
         if (!string.IsNullOrEmpty(_config.ApiKey))
         {
             try
@@ -187,9 +187,9 @@ internal sealed class SettingsForm : Form
                 var (status, body) = _api.Get("/rest/config/options");
                 if (status == 200)
                 {
-                    curGlobal = ParseJsonBool(body, "globalAnnounceEnabled", true);
-                    curLocal = ParseJsonBool(body, "localAnnounceEnabled", true);
-                    curRelay = ParseJsonBool(body, "relaysEnabled", true);
+                    curGlobal = ParseJsonBool(body, "globalAnnounceEnabled", false);
+                    curLocal = ParseJsonBool(body, "localAnnounceEnabled", false);
+                    curRelay = ParseJsonBool(body, "relaysEnabled", false);
                 }
             }
             catch { /* best-effort */ }
