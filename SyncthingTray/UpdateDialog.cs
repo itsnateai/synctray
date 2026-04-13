@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Net.Http.Headers;
 using System.Reflection;
+using System.Security.Cryptography;
 using System.Text.Json;
 
 namespace SyncthingTray;
@@ -23,6 +24,7 @@ internal sealed class UpdateDialog : Form
 
     private string? _remoteVersion;
     private string? _downloadUrl;
+    private string? _hashFileUrl;
 
     private readonly Font _boldFont;
     private readonly Font _italicFont;
@@ -207,7 +209,11 @@ internal sealed class UpdateDialog : Form
                     if (name.Equals("SyncthingTray.exe", StringComparison.OrdinalIgnoreCase))
                     {
                         _downloadUrl = asset.GetProperty("browser_download_url").GetString() ?? "";
-                        break;
+                    }
+                    if (name.Equals("SHA256SUMS", StringComparison.OrdinalIgnoreCase) ||
+                        name.Equals("SHA256SUMS.txt", StringComparison.OrdinalIgnoreCase))
+                    {
+                        _hashFileUrl = asset.GetProperty("browser_download_url").GetString() ?? "";
                     }
                 }
             }
@@ -300,6 +306,52 @@ internal sealed class UpdateDialog : Form
         {
             if (!await DownloadFileAsync(_downloadUrl!, newPath))
                 return;
+
+            // Verify SHA256 hash if the release includes a SHA256SUMS file
+            if (!string.IsNullOrEmpty(_hashFileUrl))
+            {
+                _lblStatus.Text = "Verifying integrity...";
+                try
+                {
+                    var hashContent = await _http.GetStringAsync(_hashFileUrl, _cts!.Token);
+                    string? expectedHash = null;
+                    foreach (var line in hashContent.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+                    {
+                        // Format: "hexhash  filename" or "hexhash *filename"
+                        var parts = line.Split(new[] { ' ', '\t' }, 2, StringSplitOptions.RemoveEmptyEntries);
+                        if (parts.Length == 2 &&
+                            parts[1].Trim().TrimStart('*').Equals("SyncthingTray.exe", StringComparison.OrdinalIgnoreCase))
+                        {
+                            expectedHash = parts[0].Trim();
+                            break;
+                        }
+                    }
+
+                    if (!string.IsNullOrEmpty(expectedHash))
+                    {
+                        var actualHash = ComputeFileHash(newPath);
+                        if (!actualHash.Equals(expectedHash, StringComparison.OrdinalIgnoreCase))
+                        {
+                            TryDelete(newPath);
+                            ShowError("Hash verification failed.",
+                                "The downloaded file doesn't match the expected SHA256 checksum.");
+                            return;
+                        }
+                    }
+                    else
+                    {
+                        TryDelete(newPath);
+                        ShowError("Hash verification failed.",
+                            "SHA256SUMS file found but contains no entry for SyncthingTray.exe.");
+                        return;
+                    }
+                }
+                catch (OperationCanceledException) { throw; }
+                catch
+                {
+                    // SHA256SUMS fetch failed — defense-in-depth, proceed without verification
+                }
+            }
 
             _lblStatus.Text = "Applying update...";
             _progressOuter.Visible = false;
@@ -521,6 +573,13 @@ internal sealed class UpdateDialog : Form
     private static void TryDelete(string path)
     {
         try { if (File.Exists(path)) File.Delete(path); } catch { }
+    }
+
+    private static string ComputeFileHash(string filePath)
+    {
+        using var stream = File.OpenRead(filePath);
+        var hashBytes = SHA256.HashData(stream);
+        return Convert.ToHexString(hashBytes).ToLowerInvariant();
     }
 
     protected override void Dispose(bool disposing)
