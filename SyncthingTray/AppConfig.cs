@@ -232,9 +232,6 @@ internal sealed class AppConfig
         var chocoDir = Environment.GetEnvironmentVariable("ChocolateyInstall") ?? @"C:\ProgramData\chocolatey";
         candidates.Add(Path.Combine(chocoDir, "bin", "syncthing.exe"));
 
-        // Scoop
-        candidates.Add(Path.Combine(userProfile, "scoop", "apps", "syncthing", "current", "syncthing.exe"));
-
         // Search user profile for syncthing* folders (depth-limited to 3 levels)
         try
         {
