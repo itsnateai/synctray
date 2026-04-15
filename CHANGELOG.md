@@ -1,6 +1,6 @@
 # Changelog
 
-*LTR — Long-Term Release. Feature-complete; maintenance-only updates.*
+*LTR — Long-Term Release · one-click self-update built in.*
 
 All notable changes to SyncthingTray are documented here.
 
