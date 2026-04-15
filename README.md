@@ -1,5 +1,7 @@
 # SyncthingTray
 
+*LTR — Long-Term Release. Feature-complete; maintenance-only updates.*
+
 A lightweight system tray manager for [Syncthing](https://syncthing.net/) on Windows, built with C# (.NET 8 WinForms).
 
 ## Screenshots

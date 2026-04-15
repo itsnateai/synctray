@@ -1,5 +1,7 @@
 # Changelog
 
+*LTR — Long-Term Release. Feature-complete; maintenance-only updates.*
+
 All notable changes to SyncthingTray are documented here.
 
 ## v2.1.0 — 2026-03-18
