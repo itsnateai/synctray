@@ -194,4 +194,196 @@ public class AppConfigTests
         Assert.AreEqual("webui", config.DblClickAction);
         Assert.AreEqual(string.Empty, config.ApiKey);
     }
+
+    [TestMethod]
+    public void CorruptIni_LoadResultIsCorrupt()
+    {
+        var iniPath = Path.Combine(_tempDir, "SyncthingTray.ini");
+        File.WriteAllText(iniPath, "this line has no equals sign\nneither does this one\n",
+            new UTF8Encoding(false));
+
+        var config = new AppConfig(_tempDir);
+        Assert.AreEqual(AppConfigLoadResult.Corrupt, config.LoadResult);
+    }
+
+    [TestMethod]
+    public void CorruptIni_SaveCreatesBackup()
+    {
+        var iniPath = Path.Combine(_tempDir, "SyncthingTray.ini");
+        File.WriteAllText(iniPath, "garbage content with no parseable keys\n",
+            new UTF8Encoding(false));
+
+        var config = new AppConfig(_tempDir);
+        Assert.AreEqual(AppConfigLoadResult.Corrupt, config.LoadResult);
+        config.Save();
+
+        var backups = Directory.GetFiles(_tempDir, "*.corrupt.bak");
+        Assert.AreEqual(1, backups.Length, "Exactly one .corrupt.bak should be produced on save");
+    }
+
+    [TestMethod]
+    public void ValidIni_LoadResultIsNone()
+    {
+        var iniPath = Path.Combine(_tempDir, "SyncthingTray.ini");
+        File.WriteAllText(iniPath, "[Settings]\nApiKey=abc\n", new UTF8Encoding(false));
+        var config = new AppConfig(_tempDir);
+        Assert.AreEqual(AppConfigLoadResult.None, config.LoadResult);
+    }
+
+    [TestMethod]
+    public void FirstRunStub_DoesNotLookCorrupt()
+    {
+        // After SeedFirstRunStub, the next launch must see LoadResult.None, not Corrupt
+        var config = new AppConfig(_tempDir);
+        Assert.IsTrue(config.IsFirstRun);
+        config.SeedFirstRunStub();
+
+        var config2 = new AppConfig(_tempDir);
+        Assert.IsFalse(config2.IsFirstRun);
+        Assert.AreEqual(AppConfigLoadResult.None, config2.LoadResult);
+    }
+
+    [TestMethod]
+    public void DiagnosticLogging_DefaultsOn()
+    {
+        var config = new AppConfig(_tempDir);
+        Assert.IsTrue(config.DiagnosticLogging, "Default should be true so field reports have content");
+    }
+
+    // ─── Security validators ─────────────────────────────────────────
+
+    [TestMethod]
+    public void ValidateWebUI_AcceptsLocalhost()
+    {
+        Assert.AreEqual("http://localhost:8384", AppConfig.ValidateWebUI("http://localhost:8384"));
+        Assert.AreEqual("http://127.0.0.1:8384", AppConfig.ValidateWebUI("http://127.0.0.1:8384"));
+        Assert.AreEqual("https://localhost:8443", AppConfig.ValidateWebUI("https://localhost:8443"));
+    }
+
+    [TestMethod]
+    public void ValidateWebUI_RejectsRemoteHost()
+    {
+        // Anything non-localhost must be rewritten to the safe default
+        Assert.AreEqual("http://localhost:8384", AppConfig.ValidateWebUI("http://evil.example.com:8384"));
+        Assert.AreEqual("http://localhost:8384", AppConfig.ValidateWebUI("http://192.168.1.50:8384"));
+    }
+
+    [TestMethod]
+    public void ValidateWebUI_RejectsNonHttpScheme()
+    {
+        Assert.AreEqual("http://localhost:8384", AppConfig.ValidateWebUI("file:///C:/Windows/System32"));
+        Assert.AreEqual("http://localhost:8384", AppConfig.ValidateWebUI("ftp://localhost:8384"));
+        Assert.AreEqual("http://localhost:8384", AppConfig.ValidateWebUI("javascript:alert(1)"));
+    }
+
+    [TestMethod]
+    public void ValidateWebUI_RejectsGarbage()
+    {
+        Assert.AreEqual("http://localhost:8384", AppConfig.ValidateWebUI(""));
+        Assert.AreEqual("http://localhost:8384", AppConfig.ValidateWebUI("not a url"));
+        Assert.AreEqual("http://localhost:8384", AppConfig.ValidateWebUI("   "));
+    }
+
+    [TestMethod]
+    public void ValidateSyncExe_RejectsPathTraversal()
+    {
+        var dummy = Path.Combine(_tempDir, "syncthing.exe");
+        File.WriteAllText(dummy, "x");
+        Assert.IsNull(AppConfig.ValidateSyncExe(Path.Combine(_tempDir, "..", "syncthing.exe")));
+    }
+
+    [TestMethod]
+    public void ValidateSyncExe_RejectsWrongFilename()
+    {
+        var attacker = Path.Combine(_tempDir, "malware.exe");
+        File.WriteAllText(attacker, "x");
+        Assert.IsNull(AppConfig.ValidateSyncExe(attacker));
+    }
+
+    [TestMethod]
+    public void ValidateSyncExe_RejectsMissingFile()
+    {
+        Assert.IsNull(AppConfig.ValidateSyncExe(Path.Combine(_tempDir, "does-not-exist", "syncthing.exe")));
+    }
+
+    [TestMethod]
+    public void ValidateSyncExe_AcceptsValidFile()
+    {
+        var dummy = Path.Combine(_tempDir, "syncthing.exe");
+        File.WriteAllText(dummy, "x");
+        Assert.AreEqual(dummy, AppConfig.ValidateSyncExe(dummy));
+    }
+
+    [TestMethod]
+    public void ValidateSyncExe_RejectsNullOrEmpty()
+    {
+        Assert.IsNull(AppConfig.ValidateSyncExe(null));
+        Assert.IsNull(AppConfig.ValidateSyncExe(""));
+        Assert.IsNull(AppConfig.ValidateSyncExe("   "));
+    }
+
+    // ─── SHA256SUMS parser (security-critical update path) ───────────
+
+    [TestMethod]
+    public void ParseShaSum_StandardFormat()
+    {
+        var content = "abc123def456  SyncthingTray.exe\n";
+        Assert.AreEqual("abc123def456", UpdateDialog.ParseShaSum(content, "SyncthingTray.exe"));
+    }
+
+    [TestMethod]
+    public void ParseShaSum_StarredBinaryMode()
+    {
+        var content = "abc123  *SyncthingTray.exe\n";
+        Assert.AreEqual("abc123", UpdateDialog.ParseShaSum(content, "SyncthingTray.exe"));
+    }
+
+    [TestMethod]
+    public void ParseShaSum_CaseInsensitiveFilename()
+    {
+        var content = "abc123  SYNCTHINGTRAY.EXE\n";
+        Assert.AreEqual("abc123", UpdateDialog.ParseShaSum(content, "SyncthingTray.exe"));
+    }
+
+    [TestMethod]
+    public void ParseShaSum_CrlfLineEndings()
+    {
+        var content = "abc123  SyncthingTray.exe\r\notherfile  other.exe\r\n";
+        Assert.AreEqual("abc123", UpdateDialog.ParseShaSum(content, "SyncthingTray.exe"));
+    }
+
+    [TestMethod]
+    public void ParseShaSum_MultipleEntries_PicksCorrect()
+    {
+        var content = "deadbeef  OtherFile.exe\nabc123  SyncthingTray.exe\nffffff  Third.exe\n";
+        Assert.AreEqual("abc123", UpdateDialog.ParseShaSum(content, "SyncthingTray.exe"));
+    }
+
+    [TestMethod]
+    public void ParseShaSum_NotFound_ReturnsNull()
+    {
+        var content = "abc123  OtherFile.exe\n";
+        Assert.IsNull(UpdateDialog.ParseShaSum(content, "SyncthingTray.exe"));
+    }
+
+    [TestMethod]
+    public void ParseShaSum_EmptyContent_ReturnsNull()
+    {
+        Assert.IsNull(UpdateDialog.ParseShaSum("", "SyncthingTray.exe"));
+        Assert.IsNull(UpdateDialog.ParseShaSum("\n\n\n", "SyncthingTray.exe"));
+    }
+
+    [TestMethod]
+    public void ParseShaSum_SkipsCommentsAndBlankLines()
+    {
+        var content = "# header comment\n\nabc123  SyncthingTray.exe\n\n# footer\n";
+        Assert.AreEqual("abc123", UpdateDialog.ParseShaSum(content, "SyncthingTray.exe"));
+    }
+
+    [TestMethod]
+    public void ParseShaSum_MalformedLines_Skipped()
+    {
+        var content = "not enough parts\njust-one-token\nabc123  SyncthingTray.exe\n";
+        Assert.AreEqual("abc123", UpdateDialog.ParseShaSum(content, "SyncthingTray.exe"));
+    }
 }

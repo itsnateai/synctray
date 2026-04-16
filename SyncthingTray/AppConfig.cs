@@ -26,7 +26,13 @@ internal sealed class AppConfig
     public bool AutoCheckUpdates { get; set; }
     public bool SoundNotifications { get; set; }
     public bool StopOnExit { get; set; }
-    public bool DiagnosticLogging { get; set; }
+
+    /// <summary>
+    /// Default true: a long-term tray app benefits from having a persistent log
+    /// the user can attach to a bug report. 1 MB cap + 1-generation rotation
+    /// keeps the disk cost negligible. Opt-out via SyncthingTray.ini.
+    /// </summary>
+    public bool DiagnosticLogging { get; set; } = true;
 
     public string SettingsFilePath { get; }
     public bool IsPortable { get; }
@@ -138,7 +144,7 @@ internal sealed class AppConfig
         AutoCheckUpdates = GetBool(settings, "AutoCheckUpdates", false);
         SoundNotifications = GetBool(settings, "SoundNotifications", false);
         StopOnExit = GetBool(settings, "StopOnExit", false);
-        DiagnosticLogging = GetBool(settings, "DiagnosticLogging", false);
+        DiagnosticLogging = GetBool(settings, "DiagnosticLogging", true);
 
         var exe = GetString(settings, "SyncExe", string.Empty);
         if (!string.IsNullOrEmpty(exe))
@@ -248,7 +254,7 @@ internal sealed class AppConfig
     /// <summary>
     /// Validate SyncExe points to an actual syncthing binary.
     /// </summary>
-    private static string? ValidateSyncExe(string? path)
+    internal static string? ValidateSyncExe(string? path)
     {
         if (string.IsNullOrWhiteSpace(path)) return null;
         // Reject path traversal

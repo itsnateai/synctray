@@ -331,18 +331,7 @@ internal sealed class UpdateDialog : Form
                 return;
             }
 
-            string? expectedHash = null;
-            foreach (var line in hashContent.Split('\n', StringSplitOptions.RemoveEmptyEntries))
-            {
-                // Format: "hexhash  filename" or "hexhash *filename"
-                var parts = line.Split(new[] { ' ', '\t' }, 2, StringSplitOptions.RemoveEmptyEntries);
-                if (parts.Length == 2 &&
-                    parts[1].Trim().TrimStart('*').Equals("SyncthingTray.exe", StringComparison.OrdinalIgnoreCase))
-                {
-                    expectedHash = parts[0].Trim();
-                    break;
-                }
-            }
+            string? expectedHash = ParseShaSum(hashContent, "SyncthingTray.exe");
 
             if (string.IsNullOrEmpty(expectedHash))
             {
@@ -535,29 +524,40 @@ internal sealed class UpdateDialog : Form
 
     // ─── Static Helpers (called from Program.cs) ────────────────
 
-    /// <summary>Clean up .old/.new artifacts from a previous update.</summary>
-    internal static void CleanupUpdateArtifacts()
+    /// <summary>
+    /// Torn-state recovery only: if the update was interrupted between moving
+    /// exe→.old and .new→exe, the exe is gone but .old still has the previous
+    /// version. Restore it so the tray can launch. Called from Program.Main
+    /// before any tray UI.
+    /// </summary>
+    internal static void RecoverFromTornUpdate()
     {
         var exePath = Environment.ProcessPath;
-        if (string.IsNullOrEmpty(exePath)) return;
+        if (string.IsNullOrEmpty(exePath) || File.Exists(exePath)) return;
 
-        // Torn-state recovery: if update was interrupted between moving exe→.old
-        // and .new→exe, the exe is gone but .old still has the previous version.
-        if (!File.Exists(exePath))
+        var oldPath = exePath + ".old";
+        if (File.Exists(oldPath))
         {
-            var oldPath = exePath + ".old";
-            if (File.Exists(oldPath))
-            {
-                try { File.Move(oldPath, exePath); } catch { }
-            }
-            return;
+            try { File.Move(oldPath, exePath); } catch { }
         }
+    }
+
+    /// <summary>
+    /// Proactive cleanup of stale .old/.new files. Safe to call ONLY after the
+    /// current version has proven itself stable (see TrayApplicationContext's
+    /// stability timer) — otherwise a post-update crash leaves the user with
+    /// no backup to roll back to.
+    /// </summary>
+    internal static void CleanupStaleUpdateArtifacts()
+    {
+        var exePath = Environment.ProcessPath;
+        if (string.IsNullOrEmpty(exePath) || !File.Exists(exePath)) return;
 
         foreach (var suffix in new[] { ".old", ".new" })
         {
             var path = exePath + suffix;
             if (!File.Exists(path)) continue;
-            try { File.Delete(path); } catch { /* will be cleaned on next launch */ }
+            try { File.Delete(path); } catch { /* locked; try again next stable boot */ }
         }
     }
 
@@ -641,6 +641,27 @@ internal sealed class UpdateDialog : Form
         using var stream = File.OpenRead(filePath);
         var hashBytes = SHA256.HashData(stream);
         return Convert.ToHexString(hashBytes).ToLowerInvariant();
+    }
+
+    /// <summary>
+    /// Parse a GNU-style SHA256SUMS file body and return the hex digest for the
+    /// named file, or null if not found. Accepts "hash  name" and "hash *name"
+    /// formats, is case-insensitive on the filename, and ignores blank/comment lines.
+    /// </summary>
+    internal static string? ParseShaSum(string content, string fileName)
+    {
+        if (string.IsNullOrEmpty(content) || string.IsNullOrEmpty(fileName)) return null;
+        foreach (var rawLine in content.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var line = rawLine.TrimEnd('\r').Trim();
+            if (line.Length == 0 || line[0] == '#') continue;
+            var parts = line.Split(new[] { ' ', '\t' }, 2, StringSplitOptions.RemoveEmptyEntries);
+            if (parts.Length != 2) continue;
+            var name = parts[1].Trim().TrimStart('*');
+            if (name.Equals(fileName, StringComparison.OrdinalIgnoreCase))
+                return parts[0].Trim();
+        }
+        return null;
     }
 
     protected override void Dispose(bool disposing)

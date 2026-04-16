@@ -184,14 +184,19 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
 
         // Stability proof: if we reach 30s without crashing, clear the crash sentinel
-        // so the next launch doesn't spuriously warn the user.
+        // AND proactively clean up stale .old/.new update artifacts. The artifact
+        // cleanup is deliberately deferred — doing it in Program.Main would defeat
+        // the sentinel feature on post-update crashes (we'd delete the .old backup
+        // before we knew whether the new version was stable).
         var stabilityTimer = new System.Windows.Forms.Timer { Interval = 30000 };
         stabilityTimer.Tick += (_, _) =>
         {
             stabilityTimer.Stop();
             stabilityTimer.Dispose();
+            if (_disposed) return;
             UpdateDialog.TryDeleteCrashSentinel();
-            TrayLog.Info("30s stability reached; crash sentinel cleared.");
+            UpdateDialog.CleanupStaleUpdateArtifacts();
+            TrayLog.Info("30s stability reached; crash sentinel + .old/.new cleaned.");
         };
         stabilityTimer.Start();
     }
@@ -614,6 +619,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
                     if (deviceCount > 0)
                         _paused = allPaused;
+
+                    // Prune stale device entries — if a device was removed from
+                    // Syncthing config, it won't reappear in this response; drop it
+                    // from _knownDevices to prevent unbounded growth.
+                    var seenDevices = new HashSet<string>(connections.EnumerateObject().Select(p => p.Name));
+                    foreach (var id in _knownDevices.Keys.Where(k => !seenDevices.Contains(k)).ToList())
+                        _knownDevices.Remove(id);
                 }
             }
             else
@@ -864,9 +876,18 @@ internal sealed class TrayApplicationContext : ApplicationContext
                         list.Add(new FolderInfo(fId, displayName, fPath));
                 }
                 _folders = list.ToArray();
+
+                // Prune per-folder error tracking for folders no longer configured —
+                // otherwise _folderPullErrors grows unbounded over months of churn.
+                var live = new HashSet<string>(_folders.Select(f => f.Id));
+                foreach (var id in _folderPullErrors.Keys.Where(k => !live.Contains(k)).ToList())
+                    _folderPullErrors.Remove(id);
             }
         }
-        catch { /* best-effort */ }
+        catch (Exception ex)
+        {
+            TrayLog.Warn("LoadFolders threw: " + ex.Message);
+        }
 
         BuildMenu();
     }
@@ -1311,10 +1332,19 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void ShowOsd(string text, int durationMs)
     {
+        if (_disposed) return;
         if (_osd.InvokeRequired)
-            _osd.Invoke(() => _osd.ShowMessage(text, durationMs));
+        {
+            // BeginInvoke — fire-and-forget by design. A synchronous Invoke from a
+            // pool thread can race with the UI thread's Dispose path during shutdown.
+            try { _osd.BeginInvoke(() => { if (!_disposed) _osd.ShowMessage(text, durationMs); }); }
+            catch (ObjectDisposedException) { /* tray is exiting */ }
+            catch (InvalidOperationException) { /* handle not yet created */ }
+        }
         else
+        {
             _osd.ShowMessage(text, durationMs);
+        }
     }
 
     private static Icon LoadEmbeddedIcon(string name)
@@ -1332,6 +1362,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private void ExitApplication()
     {
         _intentionalStop = true;
+        // Intentional shutdown is by definition stable — clear the sentinel so the
+        // next launch doesn't falsely warn about a crash that never happened.
+        UpdateDialog.TryDeleteCrashSentinel();
         if (_config.StopOnExit)
             StopSyncthing();
         Dispose();

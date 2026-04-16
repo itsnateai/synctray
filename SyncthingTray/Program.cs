@@ -20,14 +20,22 @@ internal static class Program
         if (!createdNew)
         {
             string processName = Path.GetFileNameWithoutExtension(Environment.ProcessPath ?? "SyncthingTray");
+            int mySession = Process.GetCurrentProcess().SessionId;
             foreach (var p in Process.GetProcessesByName(processName))
             {
                 using (p)
                 {
-                    if (p.Id != Environment.ProcessId)
-                    {
-                        try { p.Kill(); KilledPreviousInstance = true; } catch { /* already exiting */ }
-                    }
+                    if (p.Id == Environment.ProcessId) continue;
+
+                    // Only replace same-session processes; on a multi-user machine we
+                    // have no authority to kill another user's tray instance (Kill would
+                    // throw AccessDenied) and even if we did it would surprise that user.
+                    int theirSession;
+                    try { theirSession = p.SessionId; }
+                    catch { theirSession = -1; }
+                    if (theirSession != mySession) continue;
+
+                    try { p.Kill(); KilledPreviousInstance = true; } catch { /* already exiting */ }
                 }
             }
 
@@ -58,7 +66,12 @@ internal static class Program
             UpdateDialog.TryDeleteCrashSentinel();
         }
 
-        UpdateDialog.CleanupUpdateArtifacts();
+        // Torn-state recovery (exe missing, .old present) must run before we launch
+        // the tray. The proactive .old cleanup is DEFERRED to the stability timer —
+        // deleting .old here on an --after-update boot would defeat the entire crash
+        // sentinel feature, because a new-version crash within 30s would leave us
+        // with no backup to point the user at.
+        UpdateDialog.RecoverFromTornUpdate();
 
         ApplicationConfiguration.Initialize();
 
