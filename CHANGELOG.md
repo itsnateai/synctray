@@ -7,39 +7,39 @@ All notable changes to SyncthingTray are documented here.
 ## v2.1.0 — 2026-03-18
 
 ### New Features
-- Rescan Now — trigger rescan for all folders or individual folders from the tray menu
-- Configurable double-click and middle-click actions (Web UI, Rescan, Pause/Resume, Do Nothing)
-- Dark-themed owner-draw ComboBoxes in Settings
+- **Rescan Now** — trigger a rescan for all folders or an individual folder right from the tray menu.
+- **Configurable double-click and middle-click actions** — Web UI, Rescan, Pause/Resume, or Do Nothing.
+- **Dark-themed dropdowns** in Settings.
 
 ### Bug Fixes
-- Startup timer crash: guard against ObjectDisposedException when exiting during startup delay
-- Pause/Resume state desync: check API return status before updating local state
-- Conflict detection now checks all synced folders (was hardcoded to "default")
-- Explorer restart: force icon re-assignment when taskbar is recreated
-- StopSyncthing targets launched PID instead of killing all syncthing processes
-- Config Save() reports failure to user instead of silently swallowing errors
-- DoEvents re-entrancy: stop icon timer and guard menu actions during StopSyncthing
-- COM shortcut object properly released in finally block (was leaked on exception)
-- API fast-fail: skip remaining poll calls when first API call fails (reduces freeze from 25s to 5s)
-- Rescan checks if Syncthing is running before making API call
+- **No more rare crash when exiting during the startup delay.**
+- **Pause/Resume no longer gets stuck reporting the wrong state** — the tray now reflects the real Syncthing state after you pause or resume.
+- **Conflict detection works for all your folders**, not just the one named "default".
+- **Tray icon recovers after Explorer restarts** — the icon comes back automatically instead of vanishing until relaunch.
+- **Stopping Syncthing only stops the instance SyncthingTray launched** — no longer kills other `syncthing` processes you may be running separately.
+- **Config save errors are reported** instead of silently failing.
+- **Menu no longer freezes while Syncthing is shutting down.**
+- **No resource leak during startup shortcut handling.**
+- **Menu opens faster when Syncthing's API is unreachable** — the tray fails fast (about 5 seconds) instead of waiting through a long timeout chain (~25 seconds).
+- **Rescan is skipped when Syncthing isn't running** instead of throwing a cryptic error.
 
 ### Robustness
-- HttpClient with connection pooling (replaces per-request WinHttp COM objects)
-- System.Text.Json for API response parsing (replaces regex)
-- Non-blocking startup delay (timer-based, keeps message pump alive)
-- Save/Apply/Cancel button pattern in Settings
-- OSD notifications instead of MessageBox
-- Cached GDI objects in DarkMenuRenderer
+- **Faster update and status checks** with connection pooling.
+- **More robust API parsing.**
+- **Startup delay no longer freezes the tray** — you can still open menus while SyncthingTray is waiting to launch Syncthing.
+- **Save / Apply / Cancel** in Settings, like standard Windows dialogs.
+- **OSD notifications** replace intrusive pop-up dialogs for informational messages.
+- **Smoother dark menu rendering.**
 
 ## v2.0.0 — 2026-03-17
 
 ### New Features
-- Full rewrite from AutoHotkey v2 to C# .NET 8 WinForms
-- All v1.6.0 features preserved in the C# port
-- Dark-themed context menu (custom ToolStripProfessionalRenderer)
-- Poll timer re-entrancy guard (prevents stacking on cascading API timeouts)
-- Memory-optimized hot paths (cached process checks, dirty-check tooltips)
-- Embedded icons via .NET resources (no external .ico files needed at runtime)
+- **Full rewrite from AutoHotkey v2 to C# .NET 8 WinForms.**
+- All v1.6.0 features preserved in the C# port.
+- **Dark-themed context menu.**
+- **No overlapping status polls** when Syncthing's API is slow — tray stays responsive.
+- **Lower idle overhead and snappier tooltips** — the tray uses less CPU and updates only when something actually changes.
+- **Embedded icons** — tray icons are built into the .exe, no external `.ico` files needed at runtime.
 
 ## v1.6.0 — 2026-03-16
 
