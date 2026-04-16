@@ -26,10 +26,19 @@ internal sealed class AppConfig
     public bool AutoCheckUpdates { get; set; }
     public bool SoundNotifications { get; set; }
     public bool StopOnExit { get; set; }
+    public bool DiagnosticLogging { get; set; }
 
     public string SettingsFilePath { get; }
     public bool IsPortable { get; }
     public bool IsFirstRun { get; }
+
+    /// <summary>
+    /// Load-error state surfaced to the user after the tray is up.
+    /// - None: load succeeded or no file to load (first run)
+    /// - Locked: IO/permission error reading the file
+    /// - Corrupt: file existed but parsing produced no settings
+    /// </summary>
+    public AppConfigLoadResult LoadResult { get; private set; } = AppConfigLoadResult.None;
 
     /// <summary>
     /// Tracks which keys were explicitly present in the INI file.
@@ -66,45 +75,81 @@ internal sealed class AppConfig
 
     public void Load()
     {
+        string[] lines;
         try
         {
-            var lines = File.ReadAllLines(SettingsFilePath, Utf8NoBom);
-            var settings = ParseIni(lines);
-
-            _configuredKeys.Clear();
-            foreach (var key in settings.Keys)
-                _configuredKeys.Add(key);
-
-            // New action-based settings (v2.1+)
-            DblClickAction = GetString(settings, "DblClickAction", string.Empty);
-            MiddleClickAction = GetString(settings, "MiddleClickAction", string.Empty);
-
-            // Backward compat: migrate old boolean settings if new keys absent
-            if (string.IsNullOrEmpty(DblClickAction))
-                DblClickAction = GetBool(settings, "DblClickOpen", true) ? "webui" : "none";
-            if (string.IsNullOrEmpty(MiddleClickAction))
-                MiddleClickAction = GetBool(settings, "MiddleClickEnabled", true) ? "pause" : "none";
-
-            RunOnStartup = GetBool(settings, "RunOnStartup", false);
-            StartBrowser = GetBool(settings, "StartBrowser", false);
-            ApiKey = GetString(settings, "ApiKey", string.Empty);
-            NetworkAutoPause = GetBool(settings, "NetworkAutoPause", false);
-            AutoCheckUpdates = GetBool(settings, "AutoCheckUpdates", false);
-            SoundNotifications = GetBool(settings, "SoundNotifications", false);
-            StopOnExit = GetBool(settings, "StopOnExit", false);
-
-            var exe = GetString(settings, "SyncExe", string.Empty);
-            if (!string.IsNullOrEmpty(exe))
-                SyncExe = ValidateSyncExe(exe) ?? SyncExe;
-
-            var webUi = GetString(settings, "WebUI", string.Empty);
-            if (!string.IsNullOrEmpty(webUi))
-                WebUI = ValidateWebUI(webUi);
-
-            if (int.TryParse(GetString(settings, "StartupDelay", "0"), out int delay))
-                StartupDelay = delay;
+            lines = File.ReadAllLines(SettingsFilePath, Utf8NoBom);
         }
-        catch { /* settings file locked or corrupt — use defaults */ }
+        catch (IOException)
+        {
+            LoadResult = AppConfigLoadResult.Locked;
+            return;
+        }
+        catch (UnauthorizedAccessException)
+        {
+            LoadResult = AppConfigLoadResult.Locked;
+            return;
+        }
+        catch (Exception)
+        {
+            LoadResult = AppConfigLoadResult.Locked;
+            return;
+        }
+
+        Dictionary<string, string> settings;
+        try
+        {
+            settings = ParseIni(lines);
+        }
+        catch
+        {
+            LoadResult = AppConfigLoadResult.Corrupt;
+            return;
+        }
+
+        // File existed but parsed to nothing — either empty or structurally broken.
+        // Treat as corrupt so we refuse to clobber it on Save until the user confirms.
+        bool looksEmpty = settings.Count == 0 && lines.Length > 0
+            && lines.Any(l => l.Trim().Length > 0 && l.Trim()[0] != ';' && l.Trim()[0] != '[');
+        if (looksEmpty)
+        {
+            LoadResult = AppConfigLoadResult.Corrupt;
+            return;
+        }
+
+        _configuredKeys.Clear();
+        foreach (var key in settings.Keys)
+            _configuredKeys.Add(key);
+
+        // New action-based settings (v2.1+)
+        DblClickAction = GetString(settings, "DblClickAction", string.Empty);
+        MiddleClickAction = GetString(settings, "MiddleClickAction", string.Empty);
+
+        // Backward compat: migrate old boolean settings if new keys absent
+        if (string.IsNullOrEmpty(DblClickAction))
+            DblClickAction = GetBool(settings, "DblClickOpen", true) ? "webui" : "none";
+        if (string.IsNullOrEmpty(MiddleClickAction))
+            MiddleClickAction = GetBool(settings, "MiddleClickEnabled", true) ? "pause" : "none";
+
+        RunOnStartup = GetBool(settings, "RunOnStartup", false);
+        StartBrowser = GetBool(settings, "StartBrowser", false);
+        ApiKey = GetString(settings, "ApiKey", string.Empty);
+        NetworkAutoPause = GetBool(settings, "NetworkAutoPause", false);
+        AutoCheckUpdates = GetBool(settings, "AutoCheckUpdates", false);
+        SoundNotifications = GetBool(settings, "SoundNotifications", false);
+        StopOnExit = GetBool(settings, "StopOnExit", false);
+        DiagnosticLogging = GetBool(settings, "DiagnosticLogging", false);
+
+        var exe = GetString(settings, "SyncExe", string.Empty);
+        if (!string.IsNullOrEmpty(exe))
+            SyncExe = ValidateSyncExe(exe) ?? SyncExe;
+
+        var webUi = GetString(settings, "WebUI", string.Empty);
+        if (!string.IsNullOrEmpty(webUi))
+            WebUI = ValidateWebUI(webUi);
+
+        if (int.TryParse(GetString(settings, "StartupDelay", "0"), out int delay))
+            StartupDelay = delay;
     }
 
     /// <summary>
@@ -118,7 +163,7 @@ internal sealed class AppConfig
     public void MarkAllConfigured()
     {
         string[] allKeys = ["DblClickAction", "MiddleClickAction", "RunOnStartup", "StartBrowser", "ApiKey",
-            "SyncExe", "WebUI", "StartupDelay", "NetworkAutoPause", "AutoCheckUpdates", "SoundNotifications", "StopOnExit"];
+            "SyncExe", "WebUI", "StartupDelay", "NetworkAutoPause", "AutoCheckUpdates", "SoundNotifications", "StopOnExit", "DiagnosticLogging"];
         foreach (var key in allKeys)
             _configuredKeys.Add(key);
     }
@@ -142,9 +187,21 @@ internal sealed class AppConfig
         sb.AppendLine($"AutoCheckUpdates={BoolToStr(AutoCheckUpdates)}");
         sb.AppendLine($"SoundNotifications={BoolToStr(SoundNotifications)}");
         sb.AppendLine($"StopOnExit={BoolToStr(StopOnExit)}");
+        sb.AppendLine($"DiagnosticLogging={BoolToStr(DiagnosticLogging)}");
 
         try
         {
+            // If the existing file was detected as corrupt, preserve it as a backup
+            // so the user can recover any hand-edited values that failed to parse.
+            if (LoadResult == AppConfigLoadResult.Corrupt && File.Exists(SettingsFilePath))
+            {
+                var backup = SettingsFilePath + "." +
+                    DateTime.Now.ToString("yyyyMMdd-HHmmss") + ".corrupt.bak";
+                try { File.Copy(SettingsFilePath, backup, overwrite: false); }
+                catch { /* backup is best-effort; don't block the save */ }
+                LoadResult = AppConfigLoadResult.None;
+            }
+
             var tmpPath = SettingsFilePath + ".tmp";
             File.WriteAllText(tmpPath, sb.ToString(), Utf8NoBom);
             File.Move(tmpPath, SettingsFilePath, overwrite: true);
@@ -156,6 +213,25 @@ internal sealed class AppConfig
         }
     }
 
+    /// <summary>
+    /// Write a minimal stub INI so future launches don't re-trigger the first-run
+    /// wizard when the user cancels it. Only called when IsFirstRun is true.
+    /// </summary>
+    public void SeedFirstRunStub()
+    {
+        try
+        {
+            if (File.Exists(SettingsFilePath)) return;
+            File.WriteAllText(SettingsFilePath,
+                "[Settings]\n; First-run stub — open Settings to configure SyncthingTray.\n",
+                Utf8NoBom);
+        }
+        catch
+        {
+            // Portable mode on an ejected drive, or read-only location; caller will
+            // see IsFirstRun=true on next launch, which is a recoverable state.
+        }
+    }
     /// <summary>
     /// Validate WebUI is a safe localhost URL (SSRF prevention).
     /// </summary>
@@ -258,4 +334,11 @@ internal sealed class AppConfig
 
     public static string ActionIndexToValue(int index)
         => index >= 0 && index < ClickActionValues.Length ? ClickActionValues[index] : "none";
+}
+
+internal enum AppConfigLoadResult
+{
+    None,
+    Locked,
+    Corrupt,
 }

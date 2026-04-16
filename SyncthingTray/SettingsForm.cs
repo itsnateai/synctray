@@ -42,6 +42,11 @@ internal sealed class SettingsForm : Form
     private static readonly Color DimColor = Color.FromArgb(0xA0, 0xA0, 0xC0);
     private static readonly Color DividerColor = Color.FromArgb(0x40, 0x40, 0x50);
     private static readonly Color EditBgColor = Color.FromArgb(0x2A, 0x2A, 0x3E);
+    private static readonly Color ComboSelectedBgColor = Color.FromArgb(0x35, 0x35, 0x50);
+
+    // CLAUDE.md: cache GDI in paint paths — combo item draw fires per item per paint.
+    private static readonly SolidBrush ComboBgBrush = new(EditBgColor);
+    private static readonly SolidBrush ComboSelectedBrush = new(ComboSelectedBgColor);
 
     public SettingsForm(AppConfig config, SyncthingApi api, OsdToolTip osd, Action onSaved)
     {
@@ -159,8 +164,20 @@ internal sealed class SettingsForm : Form
         btnOpenWebUI.Click += (_, _) =>
         {
             var url = _edWebUI.Text.Trim();
-            if (url.Length > 0 && Uri.TryCreate(url, UriKind.Absolute, out var uri) && (uri.Scheme == "http" || uri.Scheme == "https"))
-                using (var p = Process.Start(new ProcessStartInfo(url) { UseShellExecute = true })) { }
+            if (url.Length == 0 || !Uri.TryCreate(url, UriKind.Absolute, out var uri) || (uri.Scheme != "http" && uri.Scheme != "https"))
+            {
+                _osd.ShowMessage("URL is not valid — use http:// or https://", 4000);
+                return;
+            }
+            try
+            {
+                using var p = Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                _osd.ShowMessage("Could not open browser — check Windows default browser", 5000);
+                TrayLog.Warn("SettingsForm OpenWebUI failed: " + ex.Message);
+            }
         };
         Controls.Add(btnOpenWebUI);
         y += 30;
@@ -180,6 +197,7 @@ internal sealed class SettingsForm : Form
         AddSectionHeader("Discovery", 16, ref y, sw);
 
         bool curGlobal = false, curLocal = false, curRelay = false;
+        bool discoveryRead = false;
         if (!string.IsNullOrEmpty(_config.ApiKey))
         {
             try
@@ -190,9 +208,13 @@ internal sealed class SettingsForm : Form
                     curGlobal = ParseJsonBool(body, "globalAnnounceEnabled", false);
                     curLocal = ParseJsonBool(body, "localAnnounceEnabled", false);
                     curRelay = ParseJsonBool(body, "relaysEnabled", false);
+                    discoveryRead = true;
                 }
             }
-            catch { /* best-effort */ }
+            catch (Exception ex)
+            {
+                TrayLog.Warn("Discovery read failed: " + ex.Message);
+            }
         }
 
         _cbGlobal = AddCheckBox("Global Discovery", 16, y, curGlobal);
@@ -200,8 +222,26 @@ internal sealed class SettingsForm : Form
         _cbLocal = AddCheckBox("Local Discovery", 16, y, curLocal);
         y += 24;
         _cbRelay = AddCheckBox("NAT Traversal (Relaying)", 16, y, curRelay);
-        y += 30;
+        y += 24;
+
+        // If the API read failed, the three boxes above do NOT reflect Syncthing's
+        // real state. Disable + warn so Save doesn't silently destroy the user's
+        // existing discovery config by PATCHing a default-false payload.
+        _discoveryReadOk = discoveryRead;
+        if (!discoveryRead)
+        {
+            _cbGlobal.Enabled = _cbLocal.Enabled = _cbRelay.Enabled = false;
+            AddLabel(
+                string.IsNullOrEmpty(_config.ApiKey)
+                    ? "(set API Key above to manage discovery)"
+                    : "(could not read current state — API unreachable)",
+                36, y, 320, _subFont, Color.FromArgb(0x80, 0x80, 0x90));
+            y += 18;
+        }
+        y += 6;
     }
+
+    private bool _discoveryReadOk;
 
     private void BuildUpdatesSection(ref int y, int sw)
     {
@@ -441,8 +481,10 @@ internal sealed class SettingsForm : Form
         _config.SyncExe = _edSyncExe.Text;
         _config.WebUI = AppConfig.ValidateWebUI(_edWebUI.Text);
 
-        if (int.TryParse(_edDelay.Text, out int delay))
+        if (int.TryParse(_edDelay.Text, out int delay) && delay >= 0 && delay <= 3600)
             _config.StartupDelay = delay;
+        else
+            _osd.ShowMessage($"Startup delay must be a number 0-3600 — kept previous value ({_config.StartupDelay}s)", 5000);
 
         if (!_config.Save())
         {
@@ -450,31 +492,54 @@ internal sealed class SettingsForm : Form
             return;
         }
 
-        // Save discovery settings via API
-        if (!string.IsNullOrEmpty(_config.ApiKey))
+        // Save discovery settings via API — but only if we actually read the current
+        // state when the dialog opened. Otherwise we'd be PATCHing a lie.
+        if (_discoveryReadOk && !string.IsNullOrEmpty(_config.ApiKey))
         {
             try
             {
                 var g = _cbGlobal.Checked ? "true" : "false";
                 var l = _cbLocal.Checked ? "true" : "false";
                 var r = _cbRelay.Checked ? "true" : "false";
-                _api.Patch("/rest/config/options",
+                var (status, _) = _api.Patch("/rest/config/options",
                     $"{{\"globalAnnounceEnabled\":{g},\"localAnnounceEnabled\":{l},\"relaysEnabled\":{r}}}");
+                if (status != 200)
+                {
+                    _osd.ShowMessage($"Discovery settings not saved to Syncthing (HTTP {status})", 5000);
+                    TrayLog.Warn($"Discovery PATCH returned HTTP {status}.");
+                }
             }
-            catch { /* best-effort */ }
+            catch (Exception ex)
+            {
+                _osd.ShowMessage("Discovery settings not saved to Syncthing", 5000);
+                TrayLog.Warn("Discovery PATCH threw: " + ex.Message);
+            }
         }
 
         // Apply startup shortcut
         if (!_config.IsPortable)
         {
+            var iconPath = Path.Combine(
+                Path.GetDirectoryName(Environment.ProcessPath ?? string.Empty) ?? string.Empty,
+                "Resources", "sync.ico");
+            bool ok;
             try
             {
-                var iconPath = Path.Combine(
-                    Path.GetDirectoryName(Environment.ProcessPath ?? string.Empty) ?? string.Empty,
-                    "Resources", "sync.ico");
-                StartupShortcut.Apply(_config.RunOnStartup, iconPath);
+                ok = StartupShortcut.Apply(_config.RunOnStartup, iconPath);
             }
-            catch { /* shortcut failure is non-fatal */ }
+            catch (Exception ex)
+            {
+                ok = false;
+                TrayLog.Warn("StartupShortcut.Apply threw: " + ex.Message);
+            }
+            if (!ok)
+            {
+                _osd.ShowMessage(
+                    _config.RunOnStartup
+                        ? "Could not create startup shortcut — check Windows permissions"
+                        : "Could not remove startup shortcut — it may be locked",
+                    5000);
+            }
         }
 
         // Warn if network auto-pause is enabled but WMI is unavailable
@@ -604,10 +669,7 @@ internal sealed class SettingsForm : Form
         if (e.Index < 0 || sender is not ComboBox cb) return;
 
         bool selected = (e.State & DrawItemState.Selected) != 0;
-        var bgColor = selected ? Color.FromArgb(0x35, 0x35, 0x50) : EditBgColor;
-
-        using var bgBrush = new SolidBrush(bgColor);
-        e.Graphics.FillRectangle(bgBrush, e.Bounds);
+        e.Graphics.FillRectangle(selected ? ComboSelectedBrush : ComboBgBrush, e.Bounds);
 
         var text = cb.Items[e.Index]?.ToString() ?? string.Empty;
         TextRenderer.DrawText(e.Graphics, text, cb.Font, e.Bounds, FgColor,

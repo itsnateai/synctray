@@ -29,6 +29,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly Dictionary<string, bool> _knownDevices = new();
     private bool _devicesPollSeeded;
     private int _lastConflictCount;
+    private bool _deviceApiFailureNotified;
+    private readonly Dictionary<string, int> _folderPullErrors = new();
     private bool _paused;
     private int _connectedCount;
     private int _totalDevices;
@@ -43,6 +45,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private bool _lastRunningState;
     private bool _lastPausedState;
     private bool _firstIconPoll = true;
+    private long _lastUnexpectedStopAlertTick;
 
     // Menu rebuild tracking — skip if state unchanged
     private bool _lastMenuRunning;
@@ -62,6 +65,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     // Cached WMI network category (60s TTL — WMI is slow, network category rarely changes)
     private int _cachedNetworkCategory = -1;
     private long _cachedNetworkCategoryTick;
+    private bool _wmiFailureNotified;
 
     // Pre-computed constant strings (avoid repeated interpolation)
     private static readonly string TitleString = $"SyncthingTray v{AppConfig.Version}";
@@ -88,6 +92,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         var appDir = Path.GetDirectoryName(Environment.ProcessPath ?? Application.ExecutablePath) ?? AppContext.BaseDirectory;
         _config = new AppConfig(appDir);
+        TrayLog.Enable(_config.DiagnosticLogging);
+        TrayLog.Info($"SyncthingTray v{AppConfig.Version} starting. Portable={_config.IsPortable}, FirstRun={_config.IsFirstRun}.");
         _api = new SyncthingApi(_config);
 
         // Load icons from embedded resources
@@ -115,7 +121,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _iconTimer.Tick += (_, _) => UpdateTrayIcon();
 
         _pollTimer = new System.Windows.Forms.Timer { Interval = 10000 };
-        _pollTimer.Tick += (_, _) => PollSyncStatus();
+        _pollTimer.Tick += OnPollTick;
 
         // Startup delay — use a timer so the message pump stays alive
         if (_config.StartupDelay > 0)
@@ -134,14 +140,17 @@ internal sealed class TrayApplicationContext : ApplicationContext
             StartAfterDelay();
         }
 
-        // First-run: open settings
+        // First-run: open settings. Also seed a stub INI so cancelling the dialog
+        // doesn't re-trigger first-run on the next launch forever.
         if (_config.IsFirstRun)
         {
+            _config.SeedFirstRunStub();
             var firstRunTimer = new System.Windows.Forms.Timer { Interval = 500 };
             firstRunTimer.Tick += (_, _) =>
             {
                 firstRunTimer.Stop();
                 firstRunTimer.Dispose();
+                if (_disposed) return;
                 OpenSettings();
             };
             firstRunTimer.Start();
@@ -150,6 +159,41 @@ internal sealed class TrayApplicationContext : ApplicationContext
         // Notify if we replaced a previous instance
         if (Program.KilledPreviousInstance)
             ShowOsd("Replaced previous SyncthingTray instance", 3000);
+
+        // Surface config-load failures that happened before the OSD existed.
+        switch (_config.LoadResult)
+        {
+            case AppConfigLoadResult.Locked:
+                ShowOsd("Settings file could not be read — using last session defaults", 6000);
+                TrayLog.Warn($"AppConfig.Load: file locked or unreadable: {_config.SettingsFilePath}");
+                break;
+            case AppConfigLoadResult.Corrupt:
+                ShowOsd("SyncthingTray.ini appears corrupt — defaults loaded; original will be backed up on Save", 8000);
+                TrayLog.Warn($"AppConfig.Load: corrupt file detected: {_config.SettingsFilePath}");
+                break;
+        }
+
+        // Crash sentinel persisted from the previous run — likely a bad update.
+        if (Program.CrashSentinelPersisted)
+        {
+            var exePath = Environment.ProcessPath ?? string.Empty;
+            ShowOsd(
+                $"Previous version may have crashed. Backup available at {Path.GetFileName(exePath)}.old if you need to roll back.",
+                12000);
+            TrayLog.Warn("Crash sentinel persisted across launches — previous run did not reach stable uptime.");
+        }
+
+        // Stability proof: if we reach 30s without crashing, clear the crash sentinel
+        // so the next launch doesn't spuriously warn the user.
+        var stabilityTimer = new System.Windows.Forms.Timer { Interval = 30000 };
+        stabilityTimer.Tick += (_, _) =>
+        {
+            stabilityTimer.Stop();
+            stabilityTimer.Dispose();
+            UpdateDialog.TryDeleteCrashSentinel();
+            TrayLog.Info("30s stability reached; crash sentinel cleared.");
+        };
+        stabilityTimer.Start();
     }
 
     private void StartAfterDelay()
@@ -200,18 +244,41 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void UpdateTrayIcon()
     {
+        if (_messageWindow.InvokeRequired)
+        {
+            RunOnUi(UpdateTrayIcon);
+            return;
+        }
+
         bool running = IsSyncthingRunning();
 
         if (_firstIconPoll || running != _lastRunningState || _paused != _lastPausedState)
         {
-            // Unexpected stop detection
+            // Unexpected stop detection. Rate-limit so a crash-restart flap
+            // during a Syncthing upgrade or reboot doesn't spam OSDs+beeps.
             if (!_firstIconPoll && !running && !_intentionalStop)
             {
-                ShowOsd("Syncthing has stopped unexpectedly!", 5000);
-                if (_config.SoundNotifications)
-                    PlaySound(System.Media.SystemSounds.Hand);
-                else
-                    Task.Run(() => NativeMethods.Beep(300, 300));
+                long now = Environment.TickCount64;
+                const long AlertCooldownMs = 5 * 60_000; // 5 min between alerts
+                if (_lastUnexpectedStopAlertTick == 0 || now - _lastUnexpectedStopAlertTick > AlertCooldownMs)
+                {
+                    _lastUnexpectedStopAlertTick = now;
+                    ShowOsd("Syncthing has stopped unexpectedly!", 5000);
+                    if (_config.SoundNotifications)
+                        PlaySound(System.Media.SystemSounds.Hand);
+                    else
+                    {
+                        _ = Task.Run(() =>
+                        {
+                            try { NativeMethods.Beep(300, 300); } catch { /* no speaker */ }
+                        });
+                    }
+                    TrayLog.Warn("Syncthing stopped unexpectedly.");
+                }
+            }
+            else if (running && _lastUnexpectedStopAlertTick != 0)
+            {
+                _lastUnexpectedStopAlertTick = 0; // reset on recovery
             }
 
             _intentionalStop = false;
@@ -226,6 +293,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void UpdateTooltip()
     {
+        if (_messageWindow.InvokeRequired)
+        {
+            RunOnUi(UpdateTooltip);
+            return;
+        }
+
         // Early exit: skip all string work if none of the tooltip components changed
         if (_syncStatus == _lastTipStatus
             && _syncDetail == _lastTipDetail
@@ -264,6 +337,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void BuildMenu()
     {
+        if (_messageWindow.InvokeRequired)
+        {
+            RunOnUi(BuildMenu);
+            return;
+        }
+
         bool running = IsSyncthingRunning();
 
         // Skip rebuild if nothing that affects menu items has changed
@@ -370,19 +449,49 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     // --- Polling ---
 
-    private void PollSyncStatus()
+    private async void OnPollTick(object? sender, EventArgs e)
     {
-        // Guard: stop the timer during polling so a slow cycle (cascading API
-        // timeouts up to 25s) can't stack with the next tick
+        // Timer tick fires on the UI thread. Stop it so long polls can't stack,
+        // then run the actual HTTP work on the thread pool so a slow Syncthing
+        // response (cascading 5s timeouts) can't freeze the tray menu/tooltip.
         _pollTimer.Stop();
         try
         {
-            PollSyncStatusCore();
+            await Task.Run(PollSyncStatusCore);
+        }
+        catch (Exception ex)
+        {
+            TrayLog.Warn("Poll task faulted: " + ex.Message);
         }
         finally
         {
             if (!_disposed)
                 _pollTimer.Start();
+        }
+    }
+
+    /// <summary>
+    /// Initial synchronous poll called from StartAfterDelay — populates tooltip and
+    /// menu state before the first timer tick fires.
+    /// </summary>
+    private void PollSyncStatus() => PollSyncStatusCore();
+
+    /// <summary>
+    /// Marshals <paramref name="action"/> onto the UI thread when called from a
+    /// background thread. No-op on the UI thread.
+    /// </summary>
+    private void RunOnUi(Action action)
+    {
+        if (_disposed) return;
+        if (_messageWindow.InvokeRequired)
+        {
+            try { _messageWindow.BeginInvoke(action); }
+            catch (ObjectDisposedException) { /* handle already destroyed — tray exiting */ }
+            catch (InvalidOperationException) { /* handle not yet created — same exit state */ }
+        }
+        else
+        {
+            action();
         }
     }
 
@@ -456,6 +565,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
             var (status2, body2) = _api.Get("/rest/system/connections");
             if (status2 == 200)
             {
+                if (_deviceApiFailureNotified)
+                {
+                    TrayLog.Info("Device connections endpoint recovered.");
+                    _deviceApiFailureNotified = false;
+                }
+
                 using var doc2 = JsonDocument.Parse(body2);
                 if (doc2.RootElement.TryGetProperty("connections", out var connections))
                 {
@@ -501,13 +616,34 @@ internal sealed class TrayApplicationContext : ApplicationContext
                         _paused = allPaused;
                 }
             }
+            else
+            {
+                // HTTP non-200 — one-shot OSD so the user knows device events
+                // (connect/disconnect notifications) have silently stopped.
+                if (!_deviceApiFailureNotified)
+                {
+                    _deviceApiFailureNotified = true;
+                    ShowOsd($"Device polling failed (HTTP {status2}) — check API key", 5000);
+                    TrayLog.Warn($"Device connections endpoint returned HTTP {status2}.");
+                }
+            }
         }
-        catch { /* best-effort */ }
+        catch (Exception ex)
+        {
+            if (!_deviceApiFailureNotified)
+            {
+                _deviceApiFailureNotified = true;
+                ShowOsd("Device polling failed — check Syncthing status", 5000);
+                TrayLog.Warn("Device connections threw: " + ex.Message);
+            }
+        }
 
         // 3. Conflict detection (check all known folders)
+        // Track per-folder error counts so a transient failure on one folder
+        // doesn't reset totalErrors and then spuriously re-fire the "N new errors"
+        // OSD when that folder recovers.
         try
         {
-            int totalErrors = 0;
             foreach (var folder in _folders)
             {
                 try
@@ -517,11 +653,19 @@ internal sealed class TrayApplicationContext : ApplicationContext
                     {
                         using var fd = JsonDocument.Parse(fb);
                         if (fd.RootElement.TryGetProperty("pullErrors", out var peEl) && peEl.TryGetInt32(out int ec))
-                            totalErrors += ec;
+                            _folderPullErrors[folder.Id] = ec;
                     }
+                    // Non-200 or missing pullErrors — keep the prior count rather
+                    // than defaulting to 0 (which would fake a recovery).
                 }
-                catch { /* per-folder best-effort */ }
+                catch (Exception ex)
+                {
+                    TrayLog.Warn($"Folder status read failed for {folder.Id}: {ex.Message}");
+                }
             }
+
+            int totalErrors = 0;
+            foreach (var kv in _folderPullErrors) totalErrors += kv.Value;
 
             if (totalErrors > _lastConflictCount && _lastConflictCount >= 0)
             {
@@ -531,7 +675,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
             }
             _lastConflictCount = totalErrors;
         }
-        catch { /* best-effort */ }
+        catch (Exception ex)
+        {
+            TrayLog.Warn("Conflict detection outer catch: " + ex.Message);
+        }
 
         // 4. Network auto-pause
         if (_config.NetworkAutoPause)
@@ -539,30 +686,59 @@ internal sealed class TrayApplicationContext : ApplicationContext
             try
             {
                 int cat = GetNetworkCategory();
-                if (cat != _lastNetworkCategory && _lastNetworkCategory != -1)
+                if (cat == -1)
+                {
+                    // WMI query failed — one-shot warn so user knows auto-pause is asleep
+                    if (!_wmiFailureNotified)
+                    {
+                        _wmiFailureNotified = true;
+                        ShowOsd("Network auto-pause: WMI unavailable — still syncing", 5000);
+                        TrayLog.Warn("Network auto-pause disabled: WMI returned no NetworkCategory.");
+                    }
+                }
+                else if (cat != _lastNetworkCategory && _lastNetworkCategory != -1)
                 {
                     if (cat == 0 && !_paused)
                     {
-                        _api.Post("/rest/system/pause");
-                        _paused = true;
-                        _autoPaused = true;
-                        UpdateTrayIcon();
-                        BuildMenu();
-                        ShowOsd("Auto-paused: public network detected", 3000);
+                        var (status, _) = _api.Post("/rest/system/pause");
+                        if (status == 200)
+                        {
+                            _paused = true;
+                            _autoPaused = true;
+                            UpdateTrayIcon();
+                            BuildMenu();
+                            ShowOsd("Auto-paused: public network detected", 3000);
+                        }
+                        else
+                        {
+                            ShowOsd($"Auto-pause FAILED (HTTP {status}) — still syncing on public network", 6000);
+                            TrayLog.Warn($"Auto-pause request returned HTTP {status}; _paused not flipped.");
+                        }
                     }
                     else if (cat != 0 && _autoPaused)
                     {
-                        _api.Post("/rest/system/resume");
-                        _paused = false;
-                        _autoPaused = false;
-                        UpdateTrayIcon();
-                        BuildMenu();
-                        ShowOsd("Auto-resumed: private network detected", 3000);
+                        var (status, _) = _api.Post("/rest/system/resume");
+                        if (status == 200)
+                        {
+                            _paused = false;
+                            _autoPaused = false;
+                            UpdateTrayIcon();
+                            BuildMenu();
+                            ShowOsd("Auto-resumed: private network detected", 3000);
+                        }
+                        else
+                        {
+                            ShowOsd($"Auto-resume FAILED (HTTP {status}) — still paused", 5000);
+                            TrayLog.Warn($"Auto-resume request returned HTTP {status}.");
+                        }
                     }
                 }
                 _lastNetworkCategory = cat;
             }
-            catch { /* best-effort */ }
+            catch (Exception ex)
+            {
+                TrayLog.Warn("Auto-pause error: " + ex.Message);
+            }
         }
 
         // 5. Auto-update check (24h rate limit)
@@ -701,8 +877,19 @@ internal sealed class TrayApplicationContext : ApplicationContext
     {
         var url = _config.WebUI;
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) || (uri.Scheme != "http" && uri.Scheme != "https"))
+        {
+            ShowOsd("Web UI URL is invalid — check Settings", 4000);
             return;
-        using var p = Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+        }
+        try
+        {
+            using var p = Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+        }
+        catch (Exception ex)
+        {
+            ShowOsd("Could not open browser — check Windows default browser", 5000);
+            TrayLog.Warn("OpenWebUI Process.Start failed: " + ex.Message);
+        }
     }
 
     private void OpenFolder(string path)

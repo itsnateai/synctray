@@ -12,7 +12,12 @@ internal static class StartupShortcut
         Environment.GetFolderPath(Environment.SpecialFolder.Startup),
         "SyncthingTray.lnk");
 
-    public static void Apply(bool enable, string iconPath)
+    /// <summary>
+    /// Enable or disable the Startup-folder shortcut. Returns false on any failure
+    /// (COM unavailable, file locked, group policy block) so callers can tell the
+    /// user instead of silently accepting a "Run on startup" setting that never fires.
+    /// </summary>
+    public static bool Apply(bool enable, string iconPath)
     {
         var lnk = LnkPath;
         if (enable)
@@ -24,16 +29,28 @@ internal static class StartupShortcut
             try
             {
                 var shellType = Type.GetTypeFromProgID("WScript.Shell");
-                if (shellType is null) return;
+                if (shellType is null)
+                {
+                    TrayLog.Warn("StartupShortcut: WScript.Shell ProgID not registered.");
+                    return false;
+                }
                 shell = Activator.CreateInstance(shellType);
-                if (shell is null) return;
+                if (shell is null)
+                {
+                    TrayLog.Warn("StartupShortcut: Activator returned null for WScript.Shell.");
+                    return false;
+                }
 
                 shortcut = shellType.InvokeMember(
                     "CreateShortcut",
                     System.Reflection.BindingFlags.InvokeMethod,
                     null, shell, [lnk]);
 
-                if (shortcut is null) return;
+                if (shortcut is null)
+                {
+                    TrayLog.Warn("StartupShortcut: CreateShortcut returned null.");
+                    return false;
+                }
                 var scType = shortcut.GetType();
                 scType.InvokeMember("TargetPath",
                     System.Reflection.BindingFlags.SetProperty, null, shortcut, [target]);
@@ -48,6 +65,12 @@ internal static class StartupShortcut
                 }
                 scType.InvokeMember("Save",
                     System.Reflection.BindingFlags.InvokeMethod, null, shortcut, null);
+                return true;
+            }
+            catch (Exception ex)
+            {
+                TrayLog.Warn("StartupShortcut.Apply(enable) threw: " + ex.Message);
+                return false;
             }
             finally
             {
@@ -63,8 +86,13 @@ internal static class StartupShortcut
             {
                 if (File.Exists(lnk))
                     File.Delete(lnk);
+                return true;
             }
-            catch { /* shortcut locked or already gone */ }
+            catch (Exception ex)
+            {
+                TrayLog.Warn("StartupShortcut delete failed: " + ex.Message);
+                return false;
+            }
         }
     }
 }

@@ -14,6 +14,10 @@ internal sealed class OsdToolTip : Form
     private static readonly Color BgColor = Color.FromArgb(0x1E, 0x1E, 0x2E);
     private static readonly Color FgColor = Color.FromArgb(0xCD, 0xD6, 0xF3);
 
+    // CLAUDE.md: "Cached GDI objects in renderers (no allocation in paint paths)"
+    // OSD repaints on every show — keep the border Pen process-lifetime.
+    private static readonly Pen BorderPen = new(Color.FromArgb(0x44, 0x44, 0x5A), 1);
+
     public OsdToolTip()
     {
         FormBorderStyle = FormBorderStyle.None;
@@ -109,8 +113,7 @@ internal sealed class OsdToolTip : Form
     protected override void OnPaint(PaintEventArgs e)
     {
         base.OnPaint(e);
-        using var pen = new Pen(Color.FromArgb(0x44, 0x44, 0x5A), 1);
-        e.Graphics.DrawRectangle(pen, 0, 0, Width - 1, Height - 1);
+        e.Graphics.DrawRectangle(BorderPen, 0, 0, Width - 1, Height - 1);
     }
 
     protected override CreateParams CreateParams
