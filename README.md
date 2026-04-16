@@ -40,12 +40,17 @@ Grab the latest from the [Releases](https://github.com/itsnateai/synctray/releas
 
 - **`SyncthingTray.exe`** — self-contained, no .NET runtime needed (~147 MB)
 
-### Alternative install methods (coming soon)
+### WinGet
 
 ```powershell
-# WinGet
 winget install itsnateai.SyncthingTray
 ```
+
+WinGet installs stay current automatically — use `winget upgrade itsnateai.SyncthingTray`. The in-app self-update button detects WinGet installs and points you back at the CLI instead of trying to overwrite the managed binary.
+
+### Self-update integrity
+
+Releases publish a `SHA256SUMS` file alongside the exe. The in-app **Update** button downloads it, verifies the hash, and fails closed if anything is missing or doesn't match. Unverified updates never land on disk.
 
 ## Requirements
 
@@ -79,6 +84,20 @@ Right-click the tray icon and select **Settings** to configure:
 - **Auto-update** — check for Syncthing updates daily
 
 Settings are saved to `SyncthingTray.ini` in the application directory.
+
+## Diagnostics
+
+A rolling log is written to `%LOCALAPPDATA%\SyncthingTray\tray.log` (1 MB cap, one-generation rotation to `.1`). Attach this file to any bug report. To disable logging, add `DiagnosticLogging=0` to `SyncthingTray.ini`.
+
+## Uninstall
+
+1. Right-click the tray icon → **Exit**
+2. Delete `SyncthingTray.exe` and `SyncthingTray.ini`
+3. Delete `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\SyncthingTray.lnk` if you enabled "Run on startup"
+4. Delete `%LOCALAPPDATA%\SyncthingTray\` (contains the diagnostic log and update sentinel)
+5. If installed via WinGet: `winget uninstall itsnateai.SyncthingTray`
+
+Syncthing itself is separate — uninstall it via whatever method you used to install it.
 
 ## Building from Source
 
