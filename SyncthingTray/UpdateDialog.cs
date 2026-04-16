@@ -307,54 +307,69 @@ internal sealed class UpdateDialog : Form
             if (!await DownloadFileAsync(_downloadUrl!, newPath))
                 return;
 
-            // Verify SHA256 hash if the release includes a SHA256SUMS file
-            if (!string.IsNullOrEmpty(_hashFileUrl))
+            // SHA256 verification is mandatory — releases MUST publish SHA256SUMS
+            if (string.IsNullOrEmpty(_hashFileUrl))
             {
-                _lblStatus.Text = "Verifying integrity...";
-                try
-                {
-                    var hashContent = await _http.GetStringAsync(_hashFileUrl, _cts!.Token);
-                    string? expectedHash = null;
-                    foreach (var line in hashContent.Split('\n', StringSplitOptions.RemoveEmptyEntries))
-                    {
-                        // Format: "hexhash  filename" or "hexhash *filename"
-                        var parts = line.Split(new[] { ' ', '\t' }, 2, StringSplitOptions.RemoveEmptyEntries);
-                        if (parts.Length == 2 &&
-                            parts[1].Trim().TrimStart('*').Equals("SyncthingTray.exe", StringComparison.OrdinalIgnoreCase))
-                        {
-                            expectedHash = parts[0].Trim();
-                            break;
-                        }
-                    }
+                TryDelete(newPath);
+                ShowError("Integrity verification unavailable.",
+                    "This release does not publish SHA256SUMS. Update aborted.");
+                return;
+            }
 
-                    if (!string.IsNullOrEmpty(expectedHash))
-                    {
-                        var actualHash = ComputeFileHash(newPath);
-                        if (!actualHash.Equals(expectedHash, StringComparison.OrdinalIgnoreCase))
-                        {
-                            TryDelete(newPath);
-                            ShowError("Hash verification failed.",
-                                "The downloaded file doesn't match the expected SHA256 checksum.");
-                            return;
-                        }
-                    }
-                    else
-                    {
-                        TryDelete(newPath);
-                        ShowError("Hash verification failed.",
-                            "SHA256SUMS file found but contains no entry for SyncthingTray.exe.");
-                        return;
-                    }
-                }
-                catch (OperationCanceledException) { throw; }
-                catch
+            _lblStatus.Text = "Verifying integrity...";
+            string hashContent;
+            try
+            {
+                hashContent = await _http.GetStringAsync(_hashFileUrl, _cts!.Token);
+            }
+            catch (OperationCanceledException) { throw; }
+            catch (Exception hashEx)
+            {
+                TryDelete(newPath);
+                ShowError("Integrity verification failed.",
+                    "Could not fetch SHA256SUMS: " + hashEx.Message);
+                return;
+            }
+
+            string? expectedHash = null;
+            foreach (var line in hashContent.Split('\n', StringSplitOptions.RemoveEmptyEntries))
+            {
+                // Format: "hexhash  filename" or "hexhash *filename"
+                var parts = line.Split(new[] { ' ', '\t' }, 2, StringSplitOptions.RemoveEmptyEntries);
+                if (parts.Length == 2 &&
+                    parts[1].Trim().TrimStart('*').Equals("SyncthingTray.exe", StringComparison.OrdinalIgnoreCase))
                 {
-                    // SHA256SUMS fetch failed — defense-in-depth, proceed without verification
+                    expectedHash = parts[0].Trim();
+                    break;
                 }
+            }
+
+            if (string.IsNullOrEmpty(expectedHash))
+            {
+                TryDelete(newPath);
+                ShowError("Integrity verification failed.",
+                    "SHA256SUMS has no entry for SyncthingTray.exe.");
+                return;
+            }
+
+            var actualHash = ComputeFileHash(newPath);
+            if (!actualHash.Equals(expectedHash, StringComparison.OrdinalIgnoreCase))
+            {
+                TryDelete(newPath);
+                ShowError("Integrity verification failed.",
+                    "Downloaded file does not match the expected SHA256 checksum.");
+                return;
             }
 
             _lblStatus.Text = "Applying update...";
             _progressOuter.Visible = false;
+
+            // Crash sentinel: written BEFORE the file swap. The new version's
+            // TrayApplicationContext deletes this file after 30s of stable operation.
+            // If the next launch sees this sentinel still present, the previous boot
+            // crashed before proving itself stable and the user is told to manually
+            // restore the .old backup.
+            WriteCrashSentinel();
 
             TryDelete(oldPath);
             if (File.Exists(exePath))
@@ -370,40 +385,86 @@ internal sealed class UpdateDialog : Form
         }
         catch (IOException ex)
         {
-            // Rollback: restore old exe if possible
-            if (File.Exists(oldPath))
-            {
-                TryDelete(exePath);
-                try { File.Move(oldPath, exePath); } catch { }
-            }
-            TryDelete(newPath);
-
-            ShowError(
-                ex.Message.Contains("being used by another process", StringComparison.OrdinalIgnoreCase)
-                    ? "Cannot replace the executable." : "Failed to apply update.",
-                ex.Message.Contains("being used by another process", StringComparison.OrdinalIgnoreCase)
-                    ? "Your antivirus may be locking the file. Try again." : ex.Message);
+            TryRollback(exePath, oldPath, newPath, ex);
         }
         catch (TaskCanceledException)
         {
-            if (File.Exists(oldPath))
-            {
-                TryDelete(exePath);
-                try { File.Move(oldPath, exePath); } catch { }
-            }
-            TryDelete(newPath);
+            TryRollback(exePath, oldPath, newPath, null);
             if (!IsDisposed) ShowVersionComparison();
         }
         catch (Exception ex)
         {
-            if (File.Exists(oldPath))
-            {
-                TryDelete(exePath);
-                try { File.Move(oldPath, exePath); } catch { }
-            }
-            TryDelete(newPath);
-            if (!IsDisposed) ShowError("Update failed.", ex.Message);
+            TryRollback(exePath, oldPath, newPath, ex);
         }
+    }
+
+    private void TryRollback(string exePath, string oldPath, string newPath, Exception? cause)
+    {
+        bool rollbackOk = true;
+        if (File.Exists(oldPath))
+        {
+            TryDelete(exePath);
+            try
+            {
+                File.Move(oldPath, exePath);
+            }
+            catch (Exception rbEx)
+            {
+                rollbackOk = false;
+                if (!IsDisposed)
+                    ShowError("Update failed AND rollback failed.",
+                        $"Manually rename \"{Path.GetFileName(oldPath)}\" back to \"{Path.GetFileName(exePath)}\". ({rbEx.Message})");
+            }
+        }
+        TryDelete(newPath);
+        TryDeleteCrashSentinel();
+
+        if (rollbackOk && !IsDisposed)
+        {
+            if (cause is IOException ioEx &&
+                ioEx.Message.Contains("being used by another process", StringComparison.OrdinalIgnoreCase))
+            {
+                ShowError("Cannot replace the executable.",
+                    "Your antivirus may be locking the file. Try again.");
+            }
+            else if (cause is not null)
+            {
+                ShowError("Update failed.", cause.Message);
+            }
+        }
+    }
+
+    // ─── Crash-sentinel helpers (static, callable from Program + TrayContext) ──
+
+    internal static string CrashSentinelPath
+    {
+        get
+        {
+            var dir = Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "SyncthingTray");
+            try { Directory.CreateDirectory(dir); } catch { /* fall back below */ }
+            return Path.Combine(dir, ".crashguard");
+        }
+    }
+
+    private static void WriteCrashSentinel()
+    {
+        try
+        {
+            File.WriteAllText(CrashSentinelPath, DateTime.UtcNow.ToString("o"));
+        }
+        catch { /* best-effort — absence of sentinel just disables auto-rollback detection */ }
+    }
+
+    internal static void TryDeleteCrashSentinel()
+    {
+        try
+        {
+            var path = CrashSentinelPath;
+            if (File.Exists(path)) File.Delete(path);
+        }
+        catch { /* best-effort */ }
     }
 
     private async Task<bool> DownloadFileAsync(string url, string destPath)

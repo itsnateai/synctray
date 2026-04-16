@@ -6,6 +6,13 @@ internal static class Program
 {
     internal static bool KilledPreviousInstance { get; private set; }
 
+    /// <summary>
+    /// True when the last boot crashed before clearing its crash sentinel AND a
+    /// .old backup exists — the previous update likely broke something and the
+    /// user should be told. Surfaced via OSD from TrayApplicationContext.
+    /// </summary>
+    internal static bool CrashSentinelPersisted { get; private set; }
+
     [STAThread]
     static void Main(string[] args)
     {
@@ -36,6 +43,21 @@ internal static class Program
         }
 
         bool isAfterUpdate = args.Contains("--after-update");
+
+        // Crash-sentinel check: if a sentinel persists and this is NOT the immediate
+        // post-update boot (where the sentinel is expected to still be there), the
+        // previous run crashed before proving stability. Record for TrayContext to surface.
+        if (!isAfterUpdate && File.Exists(UpdateDialog.CrashSentinelPath))
+        {
+            var exePath = Environment.ProcessPath ?? string.Empty;
+            if (File.Exists(exePath + ".old"))
+            {
+                CrashSentinelPersisted = true;
+            }
+            // Clear regardless so a one-time crash doesn't shout forever.
+            UpdateDialog.TryDeleteCrashSentinel();
+        }
+
         UpdateDialog.CleanupUpdateArtifacts();
 
         ApplicationConfiguration.Initialize();
