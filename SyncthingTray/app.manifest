@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<assembly manifestVersion="1.0" xmlns="urn:schemas-microsoft-com:asm.v1">
+  <assemblyIdentity version="1.0.0.0" name="SyncthingTray" />
+
+  <!-- Per-Monitor-V2 DPI: the OSD tooltip + Settings dialog re-scale correctly
+       when the user drags the window between monitors of different scale factors
+       (common: 100% laptop + 150% external 4K). Without this, OSD text renders
+       at first-seen DPI for the process lifetime. -->
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">PerMonitorV2</dpiAwareness>
+      <!-- Opt into Windows 10 1607+ long-path support for SyncExe paths that exceed MAX_PATH. -->
+      <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
+    </windowsSettings>
+  </application>
+
+  <!-- Declare Win10 + Win11 compatibility so the OS doesn't lie about the version
+       to GetVersionEx-style calls (not that we make any, but future-proof). -->
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- Windows 10 and Windows 11 -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}" />
+    </application>
+  </compatibility>
+</assembly>

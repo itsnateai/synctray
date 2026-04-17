@@ -9,6 +9,7 @@ internal sealed class SettingsForm : Form
 {
     private readonly AppConfig _config;
     private readonly SyncthingApi _api;
+    private readonly Action _onApplied;
     private readonly Action _onSaved;
     private readonly OsdToolTip _osd;
     private bool _disposed;
@@ -48,11 +49,12 @@ internal sealed class SettingsForm : Form
     private static readonly SolidBrush ComboBgBrush = new(EditBgColor);
     private static readonly SolidBrush ComboSelectedBrush = new(ComboSelectedBgColor);
 
-    public SettingsForm(AppConfig config, SyncthingApi api, OsdToolTip osd, Action onSaved)
+    public SettingsForm(AppConfig config, SyncthingApi api, OsdToolTip osd, Action onApplied, Action onSaved)
     {
         _config = config;
         _api = api;
         _osd = osd;
+        _onApplied = onApplied;
         _onSaved = onSaved;
 
         _boldFont = new Font("Segoe UI", 9f, FontStyle.Bold);
@@ -83,6 +85,15 @@ internal sealed class SettingsForm : Form
 
         y += 40;
         ClientSize = new Size(sw, y);
+
+        // First-run auto-open can land behind a fullscreen app (game, video) since
+        // TopMost loses to fullscreen D3D. Force foreground on the first paint so
+        // the user actually sees the dialog they're being asked to configure.
+        Shown += (_, _) =>
+        {
+            Activate();
+            BringToFront();
+        };
     }
 
     private void BuildClickActionsSection(ref int y, int sw)
@@ -198,11 +209,16 @@ internal sealed class SettingsForm : Form
 
         bool curGlobal = false, curLocal = false, curRelay = false;
         bool discoveryRead = false;
-        if (!string.IsNullOrEmpty(_config.ApiKey))
+        int discoveryStatus = -1;
+        // Fast probe first — a full HTTP GET against a dead port burns the HttpClient
+        // timeout (5s) on the UI thread, which is why this dialog used to take 6s to
+        // appear when Syncthing was off.
+        if (!string.IsNullOrEmpty(_config.ApiKey) && _api.IsReachable())
         {
             try
             {
-                var (status, body) = _api.Get("/rest/config/options");
+                var (status, body) = _api.Get("/rest/config/options", timeoutMs: 1500);
+                discoveryStatus = status;
                 if (status == 200)
                 {
                     curGlobal = ParseJsonBool(body, "globalAnnounceEnabled", false);
@@ -231,11 +247,14 @@ internal sealed class SettingsForm : Form
         if (!discoveryRead)
         {
             _cbGlobal.Enabled = _cbLocal.Enabled = _cbRelay.Enabled = false;
-            AddLabel(
-                string.IsNullOrEmpty(_config.ApiKey)
-                    ? "(set API Key above to manage discovery)"
-                    : "(could not read current state — API unreachable)",
-                36, y, 320, _subFont, Color.FromArgb(0x80, 0x80, 0x90));
+            string message;
+            if (string.IsNullOrEmpty(_config.ApiKey))
+                message = "(set API Key above to manage discovery)";
+            else if (discoveryStatus == 401 || discoveryStatus == 403)
+                message = "(API Key rejected — check the key above)";
+            else
+                message = "(could not read current state — API unreachable)";
+            AddLabel(message, 36, y, 320, _subFont, Color.FromArgb(0x80, 0x80, 0x90));
             y += 18;
         }
         y += 6;
@@ -467,7 +486,7 @@ internal sealed class SettingsForm : Form
         _osd.ShowMessage(results.Replace("\r\n", " | ").TrimEnd(' ', '|'), 5000);
     }
 
-    private void ApplySettings()
+    private void ApplySettings(bool notify)
     {
         _config.DblClickAction = AppConfig.ActionIndexToValue(_cboDblClick.SelectedIndex);
         _config.MiddleClickAction = AppConfig.ActionIndexToValue(_cboMiddleClick.SelectedIndex);
@@ -493,8 +512,9 @@ internal sealed class SettingsForm : Form
         }
 
         // Save discovery settings via API — but only if we actually read the current
-        // state when the dialog opened. Otherwise we'd be PATCHing a lie.
-        if (_discoveryReadOk && !string.IsNullOrEmpty(_config.ApiKey))
+        // state when the dialog opened AND Syncthing is still reachable. Otherwise
+        // we'd be PATCHing a lie (or wasting 5s of UI thread on a dead port).
+        if (_discoveryReadOk && !string.IsNullOrEmpty(_config.ApiKey) && _api.IsReachable())
         {
             try
             {
@@ -502,7 +522,8 @@ internal sealed class SettingsForm : Form
                 var l = _cbLocal.Checked ? "true" : "false";
                 var r = _cbRelay.Checked ? "true" : "false";
                 var (status, _) = _api.Patch("/rest/config/options",
-                    $"{{\"globalAnnounceEnabled\":{g},\"localAnnounceEnabled\":{l},\"relaysEnabled\":{r}}}");
+                    $"{{\"globalAnnounceEnabled\":{g},\"localAnnounceEnabled\":{l},\"relaysEnabled\":{r}}}",
+                    timeoutMs: 1500);
                 if (status != 200)
                 {
                     _osd.ShowMessage($"Discovery settings not saved to Syncthing (HTTP {status})", 5000);
@@ -542,41 +563,51 @@ internal sealed class SettingsForm : Form
             }
         }
 
-        // Warn if network auto-pause is enabled but WMI is unavailable
+        // Warn if network auto-pause is enabled but WMI is unavailable.
+        // Background thread: WMI cold queries can take 50-800ms on some machines,
+        // and this is a diagnostic warning only — not real-time-critical. OsdToolTip
+        // marshals the message to the UI thread internally.
         if (_config.NetworkAutoPause)
         {
-            try
+            _ = System.Threading.Tasks.Task.Run(() =>
             {
-                using var searcher = new System.Management.ManagementObjectSearcher(
-                    "root\\StandardCimv2",
-                    "SELECT NetworkCategory FROM MSFT_NetConnectionProfile");
-                using var results = searcher.Get();
                 bool found = false;
-                foreach (var obj in results)
+                try
                 {
-                    using (obj) { found = true; break; }
+                    using var searcher = new System.Management.ManagementObjectSearcher(
+                        "root\\StandardCimv2",
+                        "SELECT NetworkCategory FROM MSFT_NetConnectionProfile");
+                    using var results = searcher.Get();
+                    foreach (var obj in results)
+                    {
+                        using (obj) { found = true; break; }
+                    }
                 }
+                catch { /* handled below */ }
                 if (!found)
                     _osd.ShowMessage("Network auto-pause may not work on this system", 5000);
-            }
-            catch
-            {
-                _osd.ShowMessage("Network auto-pause may not work on this system", 5000);
-            }
+            });
         }
 
-        _onSaved();
+        if (notify)
+            _onSaved();
     }
 
     private void OnSave(object? sender, EventArgs e)
     {
-        ApplySettings();
+        ApplySettings(notify: true);
         Close();
     }
 
     private void OnApply(object? sender, EventArgs e)
     {
-        ApplySettings();
+        // Skip the _onSaved() callback — that rebuilds the tray menu via LoadFolders
+        // (another HTTP GET). Apply persists local settings (WebUI label, ApiKey,
+        // etc.) and PATCHes discovery; the folder-list refetch is what Save (or the
+        // next 10s poll tick) is for. A separate rebuild runs below to keep the
+        // menu's local-settings labels fresh (e.g., WebUI URL shown in the menu item).
+        ApplySettings(notify: false);
+        _onApplied();
         _osd.ShowMessage("Settings applied", 3000);
     }
 
@@ -721,15 +752,33 @@ internal sealed class SettingsForm : Form
 
     private static bool ParseJsonBool(string json, string key, bool defaultValue)
     {
-        // Simple pattern: "key" : true/false
-        int idx = json.IndexOf($"\"{key}\"", StringComparison.Ordinal);
-        if (idx < 0) return defaultValue;
-        int colon = json.IndexOf(':', idx + key.Length + 2);
-        if (colon < 0) return defaultValue;
-        var after = json.AsSpan(colon + 1).TrimStart();
-        if (after.StartsWith("true")) return true;
-        if (after.StartsWith("false")) return false;
-        return defaultValue;
+        // Use JsonDocument — the prior hand-rolled IndexOf approach was bypassable:
+        // a body like {"note":"\"key\":true is default","key":false} would lock on to
+        // the key-substring inside `note` and return the wrong value, which for a
+        // discovery PATCH round-trip could silently re-enable global announce on a
+        // privacy-sensitive setup.
+        try
+        {
+            using var doc = System.Text.Json.JsonDocument.Parse(json);
+            if (doc.RootElement.ValueKind != System.Text.Json.JsonValueKind.Object)
+                return defaultValue;
+            if (!doc.RootElement.TryGetProperty(key, out var el))
+                return defaultValue;
+            return el.ValueKind switch
+            {
+                System.Text.Json.JsonValueKind.True => true,
+                System.Text.Json.JsonValueKind.False => false,
+                _ => defaultValue,
+            };
+        }
+        catch (System.Text.Json.JsonException ex)
+        {
+            // Malformed Syncthing response — return the default but surface the
+            // signal; a privacy-sensitive discovery toggle silently reverting to
+            // `false` is the exact case a field report would need in the log.
+            TrayLog.Warn($"ParseJsonBool({key}): {ex.Message}");
+            return defaultValue;
+        }
     }
 
     protected override void Dispose(bool disposing)

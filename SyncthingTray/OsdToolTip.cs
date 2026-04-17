@@ -56,6 +56,22 @@ internal sealed class OsdToolTip : Form
     {
         if (_disposed) return;
 
+        // Cross-thread safety — any caller (including fire-and-forget Task.Run from
+        // Settings-save WMI probe) can reach us. Marshal onto the UI thread; without
+        // this, Timer/Label/Form mutations below throw InvalidOperationException.
+        if (InvokeRequired)
+        {
+            try { BeginInvoke((Action)(() => ShowMessage(text, durationMs))); }
+            catch (ObjectDisposedException) { /* form going away — drop the message */ }
+            catch (InvalidOperationException) { /* handle not yet created — same */ }
+            catch (System.ComponentModel.Win32Exception)
+            {
+                // GDI handle-table exhaustion or session hand-off can surface here.
+                // Dropping the message is acceptable; don't crash the caller's thread.
+            }
+            return;
+        }
+
         _hideTimer.Stop();
 
         _label.Text = text;

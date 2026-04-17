@@ -4,6 +4,30 @@
 
 All notable changes to SyncthingTray are documented here.
 
+## v2.2.6 — 2026-04-17
+
+A steadier tray, especially when Syncthing isn't running. No breaking changes.
+
+### Smoother tray
+- **No more stall when Syncthing is off.** Clicking the tray icon or opening Settings while Syncthing was stopped could hang the menu for 5–6 seconds on every click. Now the tray checks the API with a fast probe (about 1.5 seconds) and opens immediately either way.
+- **Settings window actually comes to the front.** On first open, the window occasionally appeared behind other apps and you'd have to hunt for it in the taskbar. It now activates reliably.
+- **Wake-from-sleep catches up fast.** Resuming from sleep, hibernate, or Win+L now triggers an immediate status refresh instead of waiting up to a full poll cycle for the tray to notice the network came back.
+- **Apply vs Save.** Clicking **Apply** in Settings no longer re-runs the full folder reload — the folder list no longer flickers when you tweak one setting at a time. **Save** continues to run the full path as before.
+
+### Clearer errors
+- **"API key rejected" is its own message.** A wrong or stale API key in Settings now surfaces as a distinct error instead of folding into a generic "could not reach Syncthing" message, so you know exactly what to fix.
+- **Fewer duplicate log lines.** When multiple different warnings fire in the same minute, each type is now logged once per minute instead of every occurrence piling up in `tray.log`.
+
+### Display & paths
+- **Crisper on high-DPI displays.** The app now declares Per-Monitor V2 DPI awareness, so text and icons render sharp on 4K displays and when dragging between monitors at different scales.
+- **Long paths supported.** Paths over 260 characters in folder selection now work on Windows 10/11 with long paths enabled, instead of being silently truncated.
+
+### Safer install paths
+- **Network paths rejected for `syncthing.exe`.** Pointing the tray at `\\server\share\syncthing.exe` or similar UNC paths is now refused with a clear error, rather than launching an executable across the network.
+
+### Packaging
+- **Single-file release is smaller.** Publish compression is on and native runtime libraries are embedded inside the .exe — the download drops by roughly a third and nothing loose lands next to the binary.
+
 ## v2.2.5 — 2026-04-16
 
 A safer self-update and a lot less guessing. No breaking changes — your existing settings keep working.

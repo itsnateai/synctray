@@ -293,6 +293,26 @@ public class AppConfigTests
     }
 
     [TestMethod]
+    public void ValidateSyncExe_RejectsUncPath()
+    {
+        // UNC share paths trigger NTLM handshake on File.Exists — reject before we
+        // ever touch the filesystem.
+        Assert.IsNull(AppConfig.ValidateSyncExe(@"\\attacker\share\syncthing.exe"));
+        Assert.IsNull(AppConfig.ValidateSyncExe(@"\\server\c$\syncthing.exe"));
+    }
+
+    [TestMethod]
+    public void ValidateSyncExe_RejectsNullByteTruncation()
+    {
+        var dummy = Path.Combine(_tempDir, "syncthing.exe");
+        File.WriteAllText(dummy, "x");
+        // A path with an embedded NUL in classic C would truncate at the NUL; .NET
+        // handles it safely but we reject outright to harden against any native
+        // interop surprise.
+        Assert.IsNull(AppConfig.ValidateSyncExe(dummy + "\0.evil"));
+    }
+
+    [TestMethod]
     public void ValidateSyncExe_RejectsWrongFilename()
     {
         var attacker = Path.Combine(_tempDir, "malware.exe");

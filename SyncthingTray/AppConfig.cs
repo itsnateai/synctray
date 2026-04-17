@@ -259,6 +259,18 @@ internal sealed class AppConfig
         if (string.IsNullOrWhiteSpace(path)) return null;
         // Reject path traversal
         if (path.Contains("..")) return null;
+        // Reject null-byte truncation attempts
+        if (path.Contains('\0')) return null;
+        // Reject UNC / remote-share paths — a tampered INI pointing at
+        // \\attacker\share\syncthing.exe would trigger an NTLM handshake against
+        // the attacker on the local network, leaking the user's hash even before
+        // File.Exists returns.
+        try
+        {
+            if (Uri.TryCreate(path, UriKind.Absolute, out var uri) && uri.IsUnc) return null;
+        }
+        catch { /* treat as invalid */ return null; }
+        if (path.StartsWith(@"\\", StringComparison.Ordinal)) return null;
         // Must be named syncthing.exe (case-insensitive)
         var fileName = Path.GetFileName(path);
         if (!fileName.Equals("syncthing.exe", StringComparison.OrdinalIgnoreCase)) return null;

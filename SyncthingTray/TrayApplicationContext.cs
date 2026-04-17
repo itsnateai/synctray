@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Management;
 using System.Text.Json;
@@ -30,7 +31,17 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private bool _devicesPollSeeded;
     private int _lastConflictCount;
     private bool _deviceApiFailureNotified;
-    private readonly Dictionary<string, int> _folderPullErrors = new();
+    // Accessed from both the UI thread (LoadFolders via Settings Save) and the poll
+    // thread (PollSyncStatusCore). Concurrent dict removes the enumerate-during-remove
+    // race that would throw InvalidOperationException on a plain Dictionary.
+    private readonly ConcurrentDictionary<string, int> _folderPullErrors = new();
+    // Serializes LoadFolders so a poll-tick lazy reload can't race with a Settings-Save
+    // reload. Both threads would otherwise fire duplicate HTTP GETs and compete on
+    // the _folders assignment + _folderPullErrors prune.
+    private readonly System.Threading.SemaphoreSlim _loadFoldersGate = new(1, 1);
+    // volatile: publication ordering with `_folders` — readers that see the latch
+    // set must also see the latest `_folders` assignment done immediately before it.
+    private volatile bool _foldersLoadedSuccessfully;
     private bool _paused;
     private int _connectedCount;
     private int _totalDevices;
@@ -199,6 +210,32 @@ internal sealed class TrayApplicationContext : ApplicationContext
             TrayLog.Info("30s stability reached; crash sentinel + .old/.new cleaned.");
         };
         stabilityTimer.Start();
+
+        // Sleep/wake: on Resume, the Syncthing process state and the network
+        // category (for auto-pause) may both be stale. Drop caches and force an
+        // immediate poll so the tray reflects reality before the next 10s tick.
+        Microsoft.Win32.SystemEvents.PowerModeChanged += OnPowerModeChanged;
+    }
+
+    private void OnPowerModeChanged(object? sender, Microsoft.Win32.PowerModeChangedEventArgs e)
+    {
+        if (_disposed) return;
+        if (e.Mode != Microsoft.Win32.PowerModes.Resume) return;
+        TrayLog.Info("PowerMode: Resume — invalidating caches + polling.");
+        InvalidateRunningCache();
+        // Marshal to UI thread — SystemEvents.PowerModeChanged fires on a
+        // background thread that the CLR pools for SystemEvents callbacks.
+        RunOnUi(() =>
+        {
+            if (_disposed) return;
+            _pollTimer.Stop();
+            _ = System.Threading.Tasks.Task.Run(() =>
+            {
+                try { PollSyncStatusCore(); }
+                catch (Exception ex) { TrayLog.Warn("PowerMode Resume poll faulted: " + ex.Message); }
+                finally { if (!_disposed) RunOnUi(() => { if (!_disposed) _pollTimer.Start(); }); }
+            });
+        });
     }
 
     private void StartAfterDelay()
@@ -564,6 +601,15 @@ internal sealed class TrayApplicationContext : ApplicationContext
             return;
         }
 
+        // Lazy folder reload — when the tray starts while Syncthing is off, LoadFolders
+        // bails on the probe and leaves _folders empty. Once Syncthing comes up and a
+        // poll succeeds, refetch so the "Synced Folders" submenu appears without the
+        // user having to open+save Settings or hit Refresh List.
+        // Using a success latch (not `_folders.Length == 0`) so legit zero-folder
+        // users don't re-fetch every 10s forever.
+        if (!_foldersLoadedSuccessfully)
+            LoadFolders();
+
         // 2. Device tracking
         try
         {
@@ -858,38 +904,81 @@ internal sealed class TrayApplicationContext : ApplicationContext
             return;
         }
 
+        // Non-blocking gate — if another thread is already inside LoadFolders (UI
+        // Settings-Save vs poll-tick lazy reload), skip. The in-flight call will
+        // publish results via `_folders = ...`. No need to duplicate the HTTP GET.
+        if (!_loadFoldersGate.Wait(0))
+        {
+            TrayLog.Info("LoadFolders: skipped — concurrent call in flight.");
+            return;
+        }
         try
         {
-            var (status, body) = _api.Get("/rest/config/folders");
-            if (status == 200)
+            // Fast probe — skip the 5s HttpClient timeout on the UI thread when Syncthing
+            // isn't listening. Called from the Save-settings callback, so a 5s freeze here
+            // showed up to the user as "Save button lags then closes".
+            if (!_api.IsReachable())
             {
-                using var doc = JsonDocument.Parse(body);
-                var list = new List<FolderInfo>();
-                foreach (var folder in doc.RootElement.EnumerateArray())
-                {
-                    string fId = folder.TryGetProperty("id", out var idEl) ? idEl.GetString() ?? string.Empty : string.Empty;
-                    string fLabel = folder.TryGetProperty("label", out var lblEl) ? lblEl.GetString() ?? string.Empty : string.Empty;
-                    string fPath = folder.TryGetProperty("path", out var pathEl) ? pathEl.GetString() ?? string.Empty : string.Empty;
-
-                    string displayName = fLabel.Length > 0 ? fLabel : fId;
-                    if (fPath.Length > 0)
-                        list.Add(new FolderInfo(fId, displayName, fPath));
-                }
-                _folders = list.ToArray();
-
-                // Prune per-folder error tracking for folders no longer configured —
-                // otherwise _folderPullErrors grows unbounded over months of churn.
-                var live = new HashSet<string>(_folders.Select(f => f.Id));
-                foreach (var id in _folderPullErrors.Keys.Where(k => !live.Contains(k)).ToList())
-                    _folderPullErrors.Remove(id);
+                // Drop the stale list — menu shouldn't show ghost folders from before
+                // Syncthing died. The poll-tick lazy-reload will refill it when
+                // Syncthing comes back.
+                _folders = [];
+                _foldersLoadedSuccessfully = false;
+                BuildMenu();
+                return;
             }
-        }
-        catch (Exception ex)
-        {
-            TrayLog.Warn("LoadFolders threw: " + ex.Message);
-        }
 
-        BuildMenu();
+            try
+            {
+                var (status, body) = _api.Get("/rest/config/folders", timeoutMs: 1500);
+                if (status == 200)
+                {
+                    using var doc = JsonDocument.Parse(body);
+                    var list = new List<FolderInfo>();
+                    foreach (var folder in doc.RootElement.EnumerateArray())
+                    {
+                        string fId = folder.TryGetProperty("id", out var idEl) ? idEl.GetString() ?? string.Empty : string.Empty;
+                        string fLabel = folder.TryGetProperty("label", out var lblEl) ? lblEl.GetString() ?? string.Empty : string.Empty;
+                        string fPath = folder.TryGetProperty("path", out var pathEl) ? pathEl.GetString() ?? string.Empty : string.Empty;
+
+                        string displayName = fLabel.Length > 0 ? fLabel : fId;
+                        if (fPath.Length > 0)
+                            list.Add(new FolderInfo(fId, displayName, fPath));
+                    }
+                    _folders = list.ToArray();
+                    // Success latch — even an empty folder list counts. Prevents the poll
+                    // tick from re-firing LoadFolders every 10s for zero-folder users.
+                    _foldersLoadedSuccessfully = true;
+                    TrayLog.Info($"LoadFolders: HTTP 200, {_folders.Length} folder(s) loaded.");
+
+                    // Prune per-folder error tracking for folders no longer configured —
+                    // otherwise _folderPullErrors grows unbounded over months of churn.
+                    var live = new HashSet<string>(_folders.Select(f => f.Id));
+                    foreach (var id in _folderPullErrors.Keys.Where(k => !live.Contains(k)).ToList())
+                        _folderPullErrors.TryRemove(id, out _);
+                }
+                else
+                {
+                    // Non-200 (401 after token rotate, 500 during Syncthing restart).
+                    // Reset latch so the next poll tick retries — otherwise a single
+                    // successful load + a later auth change strands us with ghost folders
+                    // forever.
+                    _foldersLoadedSuccessfully = false;
+                    TrayLog.Warn($"LoadFolders: HTTP {status}; will retry on next poll.");
+                }
+            }
+            catch (Exception ex)
+            {
+                _foldersLoadedSuccessfully = false;
+                TrayLog.Warn("LoadFolders threw: " + ex.Message);
+            }
+
+            BuildMenu();
+        }
+        finally
+        {
+            _loadFoldersGate.Release();
+        }
     }
 
     // --- Menu Actions ---
@@ -937,11 +1026,17 @@ internal sealed class TrayApplicationContext : ApplicationContext
             }
         }
 
-        using var form = new SettingsForm(_config, _api, _osd, () =>
-        {
-            LoadFolders();
-            ShowOsd("Settings saved", 3000);
-        });
+        using var form = new SettingsForm(
+            _config, _api, _osd,
+            // Apply: lightweight — rebuild the menu so local-settings labels (WebUI
+            // URL etc.) reflect what the user just saved. No HTTP refetch.
+            onApplied: BuildMenu,
+            // Save: full path — refetch folder list + OSD confirmation.
+            onSaved: () =>
+            {
+                LoadFolders();
+                ShowOsd("Settings saved", 3000);
+            });
         form.ShowDialog();
     }
 
@@ -1380,6 +1475,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _disposed = true;
             if (disposing)
             {
+                // Unsubscribe first — SystemEvents holds a strong reference that
+                // otherwise keeps this context alive past tray exit and fires
+                // PowerModeChanged on a disposed state.
+                Microsoft.Win32.SystemEvents.PowerModeChanged -= OnPowerModeChanged;
+
                 _iconTimer.Stop();
                 _iconTimer.Dispose();
                 _pollTimer.Stop();
@@ -1395,6 +1495,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 _api.Dispose();
                 _syncIcon.Dispose();
                 _pauseIcon.Dispose();
+                _loadFoldersGate.Dispose();
             }
         }
         base.Dispose(disposing);
