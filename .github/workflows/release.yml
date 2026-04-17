@@ -47,9 +47,10 @@ jobs:
         run: |
           $version = "${{ steps.version.outputs.VERSION }}"
           $content = Get-Content CHANGELOG.md -Raw
-          # Capture the body between `## [<version>]` and the next `## [` (or end)
+          # Capture the body between `## v<version> — <date>` and the next `## v<version>` (or end).
+          # SyncTray CHANGELOG uses `## v2.2.6 — 2026-04-17` format; subsections use `###`.
           $escaped = [regex]::Escape($version)
-          $pattern = "(?ms)^##\s*\[$escaped\][^\n]*\n(.*?)(?=^##\s*\[|\z)"
+          $pattern = "(?ms)^##\s+v$escaped\b[^\n]*\n(.*?)(?=^##\s+v\d|\z)"
           $m = [regex]::Match($content, $pattern)
           if ($m.Success) {
             $notes = $m.Groups[1].Value.Trim()
