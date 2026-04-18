@@ -4,6 +4,140 @@
 
 All notable changes to SyncthingTray are documented here.
 
+## v2.2.22 — 2026-04-17
+
+### Settings
+- **No more jolt on Save.** The Save button used to run up to ~1200 ms of synchronous work on the UI thread: a 300 ms socket probe + up to 1500 ms discovery PATCH + 50-200 ms WScript.Shell COM call for the startup shortcut + the tray-refresh callback which itself fires three more HTTP GETs. Now `_config.Save()` (the actual INI write) runs inline — so the file is guaranteed on disk before the dialog closes — and everything after it runs on a pool thread. The dialog dismisses instantly; OSDs for any async failure still surface correctly via the existing self-marshaling path.
+
+## v2.2.21 — 2026-04-17
+
+### Settings
+- **Button rows right-aligned with the form.** Both the top action row (GitHub / Update / Syncthing / Help / Check Config) and the bottom row (Save / Apply / Cancel) now end at x=394, giving a symmetric 16 px margin on both sides and visual alignment between the two rows. Previously the top row ended at x=384 (26 px margin) and the bottom row at x=370 (40 px margin) — enough asymmetry to read as "a bit off" on the bottom-right corner.
+
+## v2.2.20 — 2026-04-17
+
+### Help window
+- **Backup Settings button.** Added between "Syncthing Docs" and "Close" in the Help window footer. Copies `SyncthingTray.ini` (containing the API key and every user-visible setting) to a timestamped sibling file — `SyncthingTray.ini.backup-YYYYMMDD-HHMMSS` — in the same directory. The confirmation OSD shows the new filename. This is the user-facing complement to the existing `.corrupt.bak` rotation that kicks in only on detected corruption — now users can snapshot pre-emptively before a Windows update, disk migration, or fresh-install test. All three footer buttons resized to 110 px wide with symmetric 19 px gaps.
+
+## v2.2.19 — 2026-04-17
+
+### Settings
+- **Windows startup delay — text left-aligned.** Matches the convention every other input box in the dialog already follows (paths, Web UI, API key). NumericUpDown defaults to right-align which made it the only odd one out.
+
+## v2.2.18 — 2026-04-17
+
+Settings-dialog polish: clearer startup-delay control, no more jerk during auto-populate.
+
+### Settings
+- **Startup Delay → NumericUpDown.** Replaced the free-form text box with a spin-to-5 numeric control. Users can still type any value directly; the control clamps to `[0, 3600]` on both spinner and keyboard entry, so the separate range-check + error OSD in the save path is gone (value can't be invalid by construction).
+- **Label clarified: "Windows startup delay".** The setting's primary purpose is the delay on Windows auto-start before SyncTray launches Syncthing — the new label makes that plain.
+- **No more jerk when discovery auto-populates.** When Settings was open during a fresh Syncthing cold-start, the 2 s retry timer fired the 300 ms socket probe + up to 1500 ms HTTP GET synchronously on the UI thread — freezing the dialog at exactly the worst moment (right as Syncthing came alive). The HTTP work now runs on a pool thread via `Task.Run`; the UI update marshals back with `BeginInvoke` and runs inside `SuspendLayout` / `ResumeLayout` so the three checkboxes, their Enabled flips, and the warning-label removal repaint once at the end instead of cascading through five separate layout passes.
+
+## v2.2.17 — 2026-04-17
+
+No more mouse-spinner when opening a synced folder.
+
+### Synced Folders
+- **Open Folder hands off to a pool thread.** `Process.Start` was running on the UI thread, so a cold Explorer launch (100-500 ms native process fork + shell init) kept the tray's context menu and mouse cursor locked in "busy" state for ~1.5 s per click. Now the shell call runs on `Task.Run` and the menu dismisses instantly; the Explorer window still renders at whatever pace Windows manages it, but the tray stops spinning. Errors (bad path, permissions) surface as OSDs via UI-thread marshaling.
+- **Uses `UseShellExecute=true` instead of spawning `explorer.exe` directly.** The shell reuses an already-running Explorer process where possible, meaningfully faster than forking a new one every click.
+- **UNC paths skip the pre-check.** `Directory.Exists` on an unreachable network share could block the UI thread for the full SMB timeout (~20-30 s). Local paths still get the friendly "Folder not found" OSD; UNC paths delegate the existence check to the shell.
+
+## v2.2.16 — 2026-04-17
+
+Synced Folders now group by remote device (structured data), not by folder-label prefix.
+
+### Synced Folders
+- **Grouped by Remote Device.** Syncthing's `/rest/config/folders` includes a `devices` array per folder; the tray now uses that plus `/rest/config/devices` for human-readable names and `/rest/system/status` for the local myID (to filter self out). Each folder appears under every remote device it's shared with — a folder shared with 5 devices appears under all 5 device headers, which is correct and deliberate. The previous label-prefix heuristic (split on space/underscore, ≥2 folders) was fragile: it silently gave up on any naming convention that used hyphens or no separators at all.
+- **"Local only" bucket.** Folders that aren't shared with any remote device fall under a "Local only" header at the bottom instead of disappearing into an unlabeled group.
+- **Graceful degradation.** If the device roster fetch fails, device headers fall back to the short base32 handle (first hyphen-separated chunk of the device ID). If the myID fetch fails, the local device leaks as its own group until the next successful poll — ugly, not broken.
+- **Dups are safe.** Each duplicated folder entry is an independent `ToolStripMenuItem` with its own click-handler captures; disposal cascades correctly from the parent menu on every rebuild. No shared refs, no leak, no double-fire.
+
+## v2.2.15 — 2026-04-17
+
+Synced Folders — singletons now render after the device groups, not before.
+
+### Synced Folders
+- **"Other" bucket sorts last.** The unlabeled singletons group (folders whose prefix doesn't appear on ≥2 folders) was rendering at the top of the Synced Folders submenu instead of at the bottom. Cause: the previous sort-sentinel trick used `\uFFFE` as a placeholder key intended to sort last, but `StringComparer.CurrentCultureIgnoreCase` is a linguistic comparer that treats reserved/non-character code points as ignorable — so the sentinel compared as empty string and pushed singletons above `s20`/`s24`/`tablet`. Replaced the sentinel trick with explicit ordering: named device groups first (alphabetical by prefix), singletons last.
+
+## v2.2.14 — 2026-04-17
+
+Snappier close when "Stop Syncthing when tray exits" is on.
+
+### Exit
+- **Close lag cut from ~10s to ~4s worst case.** The tray used to hold the UI frozen while `StopSyncthing` ran synchronously with a 5 s HttpClient timeout + 5 s polling wait. An in-flight poll-tick could queue a GET on the single localhost keep-alive connection that blocked the shutdown POST behind it — visible as a multi-second freeze between clicking Exit and the tray icon disappearing. Now timers are stopped first (no new polls can race), the shutdown POST is capped at 2 s, and the post-shutdown wait is capped at 2 s. If Syncthing hasn't exited by then the force-kill fallback takes over immediately.
+
+## v2.2.13 — 2026-04-17
+
+Network-adaptive restore for inherited auto-pauses.
+
+### Pause
+- **Auto-pause flag persisted.** `pause.dat` now stores whether the pause was triggered by network auto-pause (line 3: `0` = manual, `1` = auto). Legacy 2-line files from v2.2.12 are still accepted and default to manual.
+- **Reboot-on-private-after-public-auto-pause adapts.** If the tray inherits an auto-pause from the previous session but the current network is private (or domain), the stale pause is dropped on startup instead of being re-applied to a freshly-launched Syncthing. Syncing resumes on boot automatically rather than requiring a manual Resume click. Manual pauses always re-apply regardless of network, preserving explicit user intent.
+
+## v2.2.12 — 2026-04-17
+
+Pause submenu polish + reboot-survival, plus two settings-flow fixes.
+
+### Pause
+- **"Until resumed" promoted to the top** of the submenu with a separator underneath, framing it as the primary action and the timed options as secondary choices.
+- **Survives reboots.** SyncthingTray re-applies the inherited pause to Syncthing on the first successful poll after startup. Syncthing's own `/rest/system/pause` is runtime-only, so without the re-apply a reboot would have silently dropped the pause. Expired deadlines (pause.dat older than its timer) are skipped rather than re-applied just to auto-resume a moment later. User changes made in the Syncthing Web UI while the tray is offline still take precedence — the poll reconciliation catches that.
+
+### Settings
+- **"Start browser when Syncthing launches" now works on every tray start.** Previously the browser only popped when Syncthing itself cold-started, so closing and relaunching the tray while Syncthing kept running silently skipped the browser-open. The tray now owns browser-opening — passes `--no-browser` to Syncthing and fires OpenWebUI once per tray session on the first reachable poll.
+- **Discovery section auto-refreshes.** When the dialog opens during a fresh cold start (Syncthing still binding its REST port), the three Discovery checkboxes used to be stuck disabled with "(could not read current state)" until the user closed and reopened the window. The dialog now retries `/rest/config/options` every 2 s in the background; once the read succeeds, the checkboxes populate and the warning label vanishes on its own.
+
+## v2.2.11 — 2026-04-17
+
+Timed pause + slimmer help text.
+
+### Pause (MWBToggle-style submenu)
+- **5 min / 30 min / Until resumed.** Right-click → Pause Syncing opens a submenu with three durations. Timed pauses auto-resume at the deadline and show the remaining time on the Resume item. "Until resumed" stays paused until you click Resume.
+- **Survives sleep.** Deadlines are stored as absolute UTC time, so a 30 min pause through a 2 hr sleep resumes at wake rather than 30 min after wake.
+- **Survives tray restart.** Active pause state persists to `pause.dat` in the app dir. Closing and reopening the tray mid-pause preserves the countdown.
+- **External resume detected.** Hitting Resume in the Syncthing Web UI clears the local timer on the next poll, so a stale deadline can't double-fire the resume path.
+- Double-click / middle-click still pause untimed — the click-path behavior from earlier versions is preserved.
+
+### Help window
+- **Content trimmed.** The verbose prose paragraphs are replaced with tight bulleted sections that still cover every tray interaction, menu item, settings group, and troubleshooting path — just faster to scan.
+
+## v2.2.10 — 2026-04-17
+
+Settings UI polish — tighter Tray Click Actions row.
+
+### Settings
+- **Click-action dropdowns sized to content.** Double-click and Middle-click combos were 250 px wide — wider than the path and API key fields in the same window. Shrunk to 160 px so each control's width matches its expected content, matching the convention used by Windows 11 Settings, VS Code, and JetBrains dialogs.
+
+## v2.2.9 — 2026-04-17
+
+Folders-by-device, proper API key masking, fuller help window, normal close button.
+
+### Synced Folders
+- **Grouped by device.** Labels that share a prefix (`s20_*`, `s24_*`, `tablet_*`) now cluster under a dimmed device header, with the prefix stripped from the child labels so the submenu reads as a true two-level list. Folders with unique names drop into an unnamed group at the bottom. Alphabetical-only sorting from v2.2.8 is replaced.
+
+### Settings
+- **API Key is masked.** The field starts hidden, matching how other apps present secrets. A Segoe MDL2 eye toggle next to the field reveals the key while pasting or verifying.
+- **Normal close button.** The Settings window's tool-window chrome gave a cramped, oddly-placed X in the top right. Settings now uses the standard fixed-dialog chrome — full-size X in the usual spot.
+
+### Help window
+- **Proper help content.** The old terse bullet list is replaced with structured prose covering tray interactions, every context menu item, every Settings section, the API key workflow, troubleshooting the most common OSDs, and the diagnostic log location.
+- **Section headers.** Content renders in a RichTextBox with blue section headers and wrapped body paragraphs, matching MicMute's help style but tuned for SyncTray's narrower window.
+
+## v2.2.8 — 2026-04-17
+
+Scannable Synced Folders menu — big readability win for users with many folders.
+
+### Synced Folders
+- **Alphabetical order.** The submenu followed Syncthing's config order, which was effectively random. Folders are now sorted case-insensitively, so device clusters like `s20_*`, `s24_*`, and `tablet_*` line up in natural groups instead of shuffling through the list.
+- **Group separators.** A thin divider is drawn between letter-groups when either side has three or more folders, giving the eye a rest point on long lists while keeping isolated names grouped at the top.
+
+## v2.2.7 — 2026-04-17
+
+Help window fixes — no functional changes elsewhere.
+
+### Help window
+- **Status section no longer clipped.** The help text below "Status:" was painted past the window edge with no way to scroll. The help body is now inside a scrollable panel, so every line is reachable regardless of DPI.
+- **Divider above buttons.** A subtle horizontal line now separates the help text from the **Syncthing Docs** and **Close** buttons, matching the divider under the title.
+
 ## v2.2.6 — 2026-04-17
 
 A steadier tray, especially when Syncthing isn't running. No breaking changes.

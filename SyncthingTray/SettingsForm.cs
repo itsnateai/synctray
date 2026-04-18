@@ -24,10 +24,12 @@ internal sealed class SettingsForm : Form
     private TextBox _edApiKey = null!;
     private TextBox _edSyncExe = null!;
     private TextBox _edWebUI = null!;
-    private TextBox _edDelay = null!;
+    private NumericUpDown _nudDelay = null!;
     private CheckBox _cbGlobal = null!;
     private CheckBox _cbLocal = null!;
     private CheckBox _cbRelay = null!;
+    private Label? _discoveryWarnLabel;
+    private System.Windows.Forms.Timer? _discoveryRetryTimer;
     private CheckBox _cbSoundNotify = null!;
     private CheckBox _cbStopOnExit = null!;
 
@@ -37,6 +39,7 @@ internal sealed class SettingsForm : Form
     private readonly Font _monoFont;
     private readonly Font _btnFont;
     private readonly Font _subFont;
+    private readonly Font _iconFont;
 
     private static readonly Color BgColor = Color.FromArgb(0x1E, 0x1E, 0x2E);
     private static readonly Color FgColor = Color.FromArgb(0xCD, 0xD6, 0xF3);
@@ -63,9 +66,15 @@ internal sealed class SettingsForm : Form
         _monoFont = new Font("Consolas", 8f);
         _btnFont = new Font("Segoe UI", 8f);
         _subFont = new Font("Segoe UI", 8f);
+        _iconFont = new Font("Segoe MDL2 Assets", 9f);
 
         Text = $"SyncthingTray v{AppConfig.Version} \u2014 Settings";
-        FormBorderStyle = FormBorderStyle.FixedToolWindow;
+        // FixedDialog (not FixedToolWindow) so the close button is the standard
+        // full-size Windows X rather than the cramped tool-window variant.
+        FormBorderStyle = FormBorderStyle.FixedDialog;
+        MaximizeBox = false;
+        MinimizeBox = false;
+        ShowIcon = false;
         StartPosition = FormStartPosition.CenterScreen;
         TopMost = true;
         BackColor = BgColor;
@@ -100,12 +109,15 @@ internal sealed class SettingsForm : Form
     {
         AddSectionHeader("Tray Click Actions", 16, ref y, sw);
 
+        // Combo width sized to content: longest option "Pause/Resume" + chevron +
+        // padding fits comfortably in 160px. Matches professional-settings-dialog
+        // convention of proportional-to-content sizing rather than row-filling.
         AddLabel("Double-click:", 16, y + 2, 0, _normalFont, DimColor);
-        _cboDblClick = AddComboBox(112, y, 250, AppConfig.ClickActions, AppConfig.ActionValueToIndex(_config.DblClickAction));
+        _cboDblClick = AddComboBox(112, y, 160, AppConfig.ClickActions, AppConfig.ActionValueToIndex(_config.DblClickAction));
         y += 30;
 
         AddLabel("Middle-click:", 16, y + 2, 0, _normalFont, DimColor);
-        _cboMiddleClick = AddComboBox(112, y, 250, AppConfig.ClickActions, AppConfig.ActionValueToIndex(_config.MiddleClickAction));
+        _cboMiddleClick = AddComboBox(112, y, 160, AppConfig.ClickActions, AppConfig.ActionValueToIndex(_config.MiddleClickAction));
         y += 30;
     }
 
@@ -134,9 +146,28 @@ internal sealed class SettingsForm : Form
         _cbStopOnExit = AddCheckBox("Stop Syncthing when tray exits", 16, y, _config.StopOnExit);
         y += 26;
 
-        AddLabel("Startup Delay:", 16, y, 0, _normalFont, DimColor);
-        _edDelay = AddTextBox(110, y - 2, 50, _config.StartupDelay.ToString());
-        AddLabel("seconds", 166, y, 0, _normalFont, DimColor);
+        // Windows startup delay — gap between tray launch and Syncthing launch.
+        // Primary use case is tray on Windows auto-startup: waiting a few seconds
+        // for the network stack and other boot services to settle before firing
+        // Syncthing. NumericUpDown lets the user spin in 5-second steps or type
+        // any value in [0, 3600] directly.
+        AddLabel("Windows startup delay:", 16, y, 0, _normalFont, DimColor);
+        _nudDelay = new NumericUpDown
+        {
+            Location = new Point(160, y - 2),
+            Width = 60,
+            Minimum = 0,
+            Maximum = 3600,
+            Increment = 5,
+            Value = Math.Clamp(_config.StartupDelay, 0, 3600),
+            Font = _normalFont,
+            ForeColor = FgColor,
+            BackColor = EditBgColor,
+            BorderStyle = BorderStyle.FixedSingle,
+            TextAlign = HorizontalAlignment.Left,
+        };
+        Controls.Add(_nudDelay);
+        AddLabel("seconds", 228, y, 0, _normalFont, DimColor);
         y += 30;
     }
 
@@ -199,7 +230,32 @@ internal sealed class SettingsForm : Form
         AddSectionHeader("API", 16, ref y, sw);
 
         AddLabel("API Key:", 16, y, 0, _normalFont, DimColor);
-        _edApiKey = AddTextBox(90, y - 2, 272, _config.ApiKey, true);
+        // Textbox is narrower than the old 272px to make room for the reveal toggle.
+        // A Syncthing API key is ~40 chars; 216px @ Consolas-8 fits the key comfortably.
+        _edApiKey = AddTextBox(90, y - 2, 216, _config.ApiKey, true);
+        _edApiKey.UseSystemPasswordChar = true;
+
+        var btnReveal = new Button
+        {
+            // "\uE7B3" = Segoe MDL2 RedEye ("show"); "\uE7B4" = Hide ("mask").
+            // These render inside the password-toggle glyph set used across Win10/11.
+            Text = "\uE7B3",
+            Font = _iconFont,
+            Location = new Point(310, y - 2),
+            Size = new Size(52, 22),
+            FlatStyle = FlatStyle.Flat,
+            ForeColor = FgColor,
+            BackColor = EditBgColor,
+            TabStop = false,
+        };
+        btnReveal.FlatAppearance.BorderColor = DividerColor;
+        btnReveal.Click += (_, _) =>
+        {
+            _edApiKey.UseSystemPasswordChar = !_edApiKey.UseSystemPasswordChar;
+            btnReveal.Text = _edApiKey.UseSystemPasswordChar ? "\uE7B3" : "\uE7B4";
+        };
+        Controls.Add(btnReveal);
+
         y += 30;
     }
 
@@ -254,10 +310,96 @@ internal sealed class SettingsForm : Form
                 message = "(API Key rejected — check the key above)";
             else
                 message = "(could not read current state — API unreachable)";
-            AddLabel(message, 36, y, 320, _subFont, Color.FromArgb(0x80, 0x80, 0x90));
+            _discoveryWarnLabel = AddLabel(message, 36, y, 320, _subFont, Color.FromArgb(0x80, 0x80, 0x90));
             y += 18;
+
+            // Auto-refresh loop — polls /rest/config/options every 2 s while the dialog
+            // is open. Covers the fresh-cold-start window where Syncthing takes 5-15 s
+            // to bind its REST port after the tray launched it. Without this, the user
+            // has to manually close + reopen Settings to pick up discovery values.
+            StartDiscoveryRetryTimer();
         }
         y += 6;
+    }
+
+    private void StartDiscoveryRetryTimer()
+    {
+        // Require an API key — without it the read will deterministically fail and
+        // spamming /rest on a bad key just adds log noise.
+        if (string.IsNullOrEmpty(_config.ApiKey)) return;
+
+        _discoveryRetryTimer = new System.Windows.Forms.Timer { Interval = 2000 };
+        _discoveryRetryTimer.Tick += (_, _) =>
+        {
+            if (_disposed || IsDisposed) { _discoveryRetryTimer?.Stop(); return; }
+
+            // Offload the probe + HTTP call to a pool thread. Running them on the
+            // UI thread (300 ms IsReachable + up to 1500 ms HTTP) froze the dialog
+            // at exactly the worst moment: when Syncthing was transitioning from
+            // down to up, right as the user was looking at Settings. The UI mutation
+            // marshals back via BeginInvoke and runs under SuspendLayout so the
+            // three checkboxes + Enabled flips + warning-label removal repaint once
+            // instead of cascading.
+            _ = Task.Run(() =>
+            {
+                if (_disposed || IsDisposed) return;
+                if (!_api.IsReachable()) return;
+
+                int status;
+                string body;
+                try
+                {
+                    (status, body) = _api.Get("/rest/config/options", timeoutMs: 1500);
+                }
+                catch (Exception ex)
+                {
+                    TrayLog.Warn("Discovery auto-refresh probe failed: " + ex.Message);
+                    return;
+                }
+                if (status != 200) return;
+
+                bool g = ParseJsonBool(body, "globalAnnounceEnabled", false);
+                bool l = ParseJsonBool(body, "localAnnounceEnabled", false);
+                bool r = ParseJsonBool(body, "relaysEnabled", false);
+
+                try
+                {
+                    BeginInvoke((Action)(() =>
+                    {
+                        if (_disposed || IsDisposed) return;
+                        SuspendLayout();
+                        try
+                        {
+                            _cbGlobal.Checked = g;
+                            _cbLocal.Checked = l;
+                            _cbRelay.Checked = r;
+                            _cbGlobal.Enabled = _cbLocal.Enabled = _cbRelay.Enabled = true;
+                            _discoveryReadOk = true;
+
+                            if (_discoveryWarnLabel != null)
+                            {
+                                Controls.Remove(_discoveryWarnLabel);
+                                _discoveryWarnLabel.Dispose();
+                                _discoveryWarnLabel = null;
+                            }
+                        }
+                        finally
+                        {
+                            ResumeLayout(false);
+                        }
+                        // Single deferred repaint instead of five mid-mutation ones.
+                        Invalidate(invalidateChildren: true);
+
+                        _discoveryRetryTimer?.Stop();
+                        _discoveryRetryTimer?.Dispose();
+                        _discoveryRetryTimer = null;
+                    }));
+                }
+                catch (ObjectDisposedException) { /* dialog closed between the probe and the marshal */ }
+                catch (InvalidOperationException) { /* handle not yet created */ }
+            });
+        };
+        _discoveryRetryTimer.Start();
     }
 
     private bool _discoveryReadOk;
@@ -329,13 +471,23 @@ internal sealed class SettingsForm : Form
 
     private void BuildButtonRow(ref int y, int sw)
     {
+        // Both rows are laid out to start at x=16 (left margin) and end at x=394
+        // (right margin 16 = left margin, form width 410). Previously the top row
+        // ended at 384 and the bottom row ended at 370, giving asymmetric
+        // whitespace on the right and misalignment between the two rows.
+        //
+        // Top row: GitHub(68) | Update(58) | Syncthing(68) | Help(58) | Check Config(100)
+        //   = 352 px of buttons, 4 gaps, flows to end at 394.
+        // Bottom row: Save(114) | Apply(114) | Cancel(114)
+        //   = 342 px of buttons, 2 × 18 px gaps, flows to end at 394.
+
         AddLinkButton("GitHub", 16, y, 68, "https://github.com/itsnateai/synctray");
 
         var btnUpdate = new Button
         {
             Text = "Update",
             Font = _btnFont,
-            Location = new Point(88, y),
+            Location = new Point(90, y),
             Size = new Size(58, 24),
             FlatStyle = FlatStyle.Flat,
             ForeColor = FgColor,
@@ -348,13 +500,13 @@ internal sealed class SettingsForm : Form
         };
         Controls.Add(btnUpdate);
 
-        AddLinkButton("Syncthing", 150, y, 68, "https://github.com/syncthing/syncthing");
+        AddLinkButton("Syncthing", 154, y, 68, "https://github.com/syncthing/syncthing");
 
         var btnHelp = new Button
         {
             Text = "Help",
             Font = _btnFont,
-            Location = new Point(222, y),
+            Location = new Point(228, y),
             Size = new Size(58, 24),
             FlatStyle = FlatStyle.Flat,
             ForeColor = FgColor,
@@ -362,7 +514,7 @@ internal sealed class SettingsForm : Form
         };
         btnHelp.Click += (_, _) =>
         {
-            using var hf = new HelpForm();
+            using var hf = new HelpForm(_config.SettingsFilePath, (msg, ms) => _osd.ShowMessage(msg, ms));
             hf.ShowDialog(this);
         };
         Controls.Add(btnHelp);
@@ -371,7 +523,7 @@ internal sealed class SettingsForm : Form
         {
             Text = "Check Config",
             Font = _btnFont,
-            Location = new Point(284, y),
+            Location = new Point(294, y),
             Size = new Size(100, 24),
             FlatStyle = FlatStyle.Flat,
             ForeColor = FgColor,
@@ -398,7 +550,7 @@ internal sealed class SettingsForm : Form
         {
             Text = "Apply",
             Font = _normalFont,
-            Location = new Point(136, y),
+            Location = new Point(148, y),
             Size = new Size(114, 30),
             FlatStyle = FlatStyle.Flat,
             ForeColor = FgColor,
@@ -411,7 +563,7 @@ internal sealed class SettingsForm : Form
         {
             Text = "Cancel",
             Font = _normalFont,
-            Location = new Point(256, y),
+            Location = new Point(280, y),
             Size = new Size(114, 30),
             FlatStyle = FlatStyle.Flat,
             ForeColor = FgColor,
@@ -500,10 +652,9 @@ internal sealed class SettingsForm : Form
         _config.SyncExe = _edSyncExe.Text;
         _config.WebUI = AppConfig.ValidateWebUI(_edWebUI.Text);
 
-        if (int.TryParse(_edDelay.Text, out int delay) && delay >= 0 && delay <= 3600)
-            _config.StartupDelay = delay;
-        else
-            _osd.ShowMessage($"Startup delay must be a number 0-3600 — kept previous value ({_config.StartupDelay}s)", 5000);
+        // NumericUpDown clamps to [Minimum, Maximum] on both spinner and typed input,
+        // so no range check or fallback OSD is needed here — the value is always valid.
+        _config.StartupDelay = (int)_nudDelay.Value;
 
         if (!_config.Save())
         {
@@ -511,65 +662,79 @@ internal sealed class SettingsForm : Form
             return;
         }
 
-        // Save discovery settings via API — but only if we actually read the current
-        // state when the dialog opened AND Syncthing is still reachable. Otherwise
-        // we'd be PATCHing a lie (or wasting 5s of UI thread on a dead port).
-        if (_discoveryReadOk && !string.IsNullOrEmpty(_config.ApiKey) && _api.IsReachable())
-        {
-            try
-            {
-                var g = _cbGlobal.Checked ? "true" : "false";
-                var l = _cbLocal.Checked ? "true" : "false";
-                var r = _cbRelay.Checked ? "true" : "false";
-                var (status, _) = _api.Patch("/rest/config/options",
-                    $"{{\"globalAnnounceEnabled\":{g},\"localAnnounceEnabled\":{l},\"relaysEnabled\":{r}}}",
-                    timeoutMs: 1500);
-                if (status != 200)
-                {
-                    _osd.ShowMessage($"Discovery settings not saved to Syncthing (HTTP {status})", 5000);
-                    TrayLog.Warn($"Discovery PATCH returned HTTP {status}.");
-                }
-            }
-            catch (Exception ex)
-            {
-                _osd.ShowMessage("Discovery settings not saved to Syncthing", 5000);
-                TrayLog.Warn("Discovery PATCH threw: " + ex.Message);
-            }
-        }
-
-        // Apply startup shortcut
-        if (!_config.IsPortable)
-        {
-            var iconPath = Path.Combine(
+        // Everything past here used to block the UI thread: a 300 ms IsReachable
+        // probe, a synchronous HTTP PATCH (up to 1500 ms), a COM call to
+        // WScript.Shell for the startup shortcut (50-200 ms), and the tray-refresh
+        // callback which itself kicks 3 more HTTP GETs. Total ~350-1200 ms of
+        // frozen UI. Now all four run on a pool thread — Save() returning means
+        // the INI is on disk; anything else is best-effort background work.
+        // OsdToolTip and the tray callbacks both self-marshal UI updates back.
+        //
+        // Snapshot every field the background task needs BEFORE leaving the UI
+        // thread — the controls can't be read from a pool thread.
+        bool globalDiscovery = _cbGlobal.Checked;
+        bool localDiscovery = _cbLocal.Checked;
+        bool relayEnabled = _cbRelay.Checked;
+        bool discoveryReadOk = _discoveryReadOk;
+        string apiKey = _config.ApiKey;
+        bool isPortable = _config.IsPortable;
+        bool runOnStartup = _config.RunOnStartup;
+        bool netAutoPause = _config.NetworkAutoPause;
+        string? iconPath = isPortable
+            ? null
+            : Path.Combine(
                 Path.GetDirectoryName(Environment.ProcessPath ?? string.Empty) ?? string.Empty,
                 "Resources", "sync.ico");
-            bool ok;
-            try
-            {
-                ok = StartupShortcut.Apply(_config.RunOnStartup, iconPath);
-            }
-            catch (Exception ex)
-            {
-                ok = false;
-                TrayLog.Warn("StartupShortcut.Apply threw: " + ex.Message);
-            }
-            if (!ok)
-            {
-                _osd.ShowMessage(
-                    _config.RunOnStartup
-                        ? "Could not create startup shortcut — check Windows permissions"
-                        : "Could not remove startup shortcut — it may be locked",
-                    5000);
-            }
-        }
+        Action? savedCallback = notify ? _onSaved : null;
 
-        // Warn if network auto-pause is enabled but WMI is unavailable.
-        // Background thread: WMI cold queries can take 50-800ms on some machines,
-        // and this is a diagnostic warning only — not real-time-critical. OsdToolTip
-        // marshals the message to the UI thread internally.
-        if (_config.NetworkAutoPause)
+        _ = System.Threading.Tasks.Task.Run(() =>
         {
-            _ = System.Threading.Tasks.Task.Run(() =>
+            if (discoveryReadOk && !string.IsNullOrEmpty(apiKey) && _api.IsReachable())
+            {
+                try
+                {
+                    var g = globalDiscovery ? "true" : "false";
+                    var l = localDiscovery ? "true" : "false";
+                    var r = relayEnabled ? "true" : "false";
+                    var (status, _) = _api.Patch("/rest/config/options",
+                        $"{{\"globalAnnounceEnabled\":{g},\"localAnnounceEnabled\":{l},\"relaysEnabled\":{r}}}",
+                        timeoutMs: 1500);
+                    if (status != 200)
+                    {
+                        _osd.ShowMessage($"Discovery settings not saved to Syncthing (HTTP {status})", 5000);
+                        TrayLog.Warn($"Discovery PATCH returned HTTP {status}.");
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _osd.ShowMessage("Discovery settings not saved to Syncthing", 5000);
+                    TrayLog.Warn("Discovery PATCH threw: " + ex.Message);
+                }
+            }
+
+            if (iconPath is not null)
+            {
+                bool ok;
+                try
+                {
+                    ok = StartupShortcut.Apply(runOnStartup, iconPath);
+                }
+                catch (Exception ex)
+                {
+                    ok = false;
+                    TrayLog.Warn("StartupShortcut.Apply threw: " + ex.Message);
+                }
+                if (!ok)
+                {
+                    _osd.ShowMessage(
+                        runOnStartup
+                            ? "Could not create startup shortcut — check Windows permissions"
+                            : "Could not remove startup shortcut — it may be locked",
+                        5000);
+                }
+            }
+
+            if (netAutoPause)
             {
                 bool found = false;
                 try
@@ -586,11 +751,13 @@ internal sealed class SettingsForm : Form
                 catch { /* handled below */ }
                 if (!found)
                     _osd.ShowMessage("Network auto-pause may not work on this system", 5000);
-            });
-        }
+            }
 
-        if (notify)
-            _onSaved();
+            // Tray refresh — LoadFolders() + the "Settings saved" OSD. The tray's
+            // onSaved delegate self-marshals its UI work via the tray's RunOnUi,
+            // so calling it from this pool thread is safe.
+            savedCallback?.Invoke();
+        });
     }
 
     private void OnSave(object? sender, EventArgs e)
@@ -788,12 +955,17 @@ internal sealed class SettingsForm : Form
             _disposed = true;
             if (disposing)
             {
+                _discoveryRetryTimer?.Stop();
+                _discoveryRetryTimer?.Dispose();
+                _discoveryRetryTimer = null;
+
                 _boldFont.Dispose();
                 _normalFont.Dispose();
                 _sectionFont.Dispose();
                 _monoFont.Dispose();
                 _btnFont.Dispose();
                 _subFont.Dispose();
+                _iconFont.Dispose();
             }
         }
         base.Dispose(disposing);

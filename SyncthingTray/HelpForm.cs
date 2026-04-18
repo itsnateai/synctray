@@ -1,29 +1,90 @@
 using System.Diagnostics;
+using System.Text;
 
 namespace SyncthingTray;
 
 /// <summary>
-/// Dark-themed Help window matching the AHK version.
+/// Dark-themed Help window. Renders structured help text via a RichTextBox with
+/// section headers and body paragraphs — same pattern as MicMute's help, adapted
+/// for SyncTray's narrower (400px) fixed window.
 /// </summary>
 internal sealed class HelpForm : Form
 {
-    private readonly Font _titleFont;
-    private readonly Font _bodyFont;
-    private readonly Font _btnFont;
+    private readonly List<Font> _fonts = new();
     private bool _disposed;
 
     private static readonly Color BgColor = Color.FromArgb(0x1E, 0x1E, 0x2E);
     private static readonly Color FgColor = Color.FromArgb(0xCD, 0xD6, 0xF3);
     private static readonly Color DividerColor = Color.FromArgb(0x40, 0x40, 0x50);
+    // Catppuccin Mocha "blue" — reads clearly as an accent on the 0x1E1E2E base.
+    private static readonly Color HeaderColor = Color.FromArgb(0x89, 0xB4, 0xFA);
 
-    public HelpForm()
+    private static readonly string s_helpText = @"Syncthing, hidden in the tray. One-click pause, rescan, and folder access without opening a browser.
+
+Sync icon = running. Pause icon = paused or stopped.
+
+——— TRAY ——————————————————————————
+
+• Right-click — full menu.
+• Double-click / Middle-click — configurable in Settings (Open Web UI, Rescan Now, Pause/Resume, or Do Nothing).
+• Tooltip shows sync state, progress %, and connected/total devices.
+
+——— MENU ——————————————————————————
+
+Open Web UI — opens the Syncthing dashboard.
+
+Synced Folders — every folder Syncthing is configured for. Each has Open Folder + Rescan. Labels sharing a prefix (""s24_*"", ""tablet_*"") cluster under a device header.
+
+Force Rescan Now — rescans every folder.
+
+Pause Syncing — submenu: 5 minutes, 30 minutes, Until resumed. Timed pauses auto-resume at the deadline and survive sleep and tray restarts.
+
+Start / Stop / Restart Syncthing — full process control.
+
+——— SETTINGS —————————————————————
+
+Tray Click Actions — behavior for Double-click and Middle-click.
+
+General — Run on startup, auto-open browser, auto-pause on public Wi-Fi, sound on events, stop Syncthing with tray, Startup Delay.
+
+Paths — Syncthing exe (auto-discovered) and Web UI URL (localhost only).
+
+API Key — required for status, pause/resume, discovery. Get it from the Web UI: Actions → Settings → API Key. Field is masked; click the eye to reveal.
+
+Discovery — Global (public tracker) and Local (LAN).
+
+Updates — daily poll for new Syncthing releases.
+
+——— TROUBLESHOOTING ———————————————
+
+""Stopped unexpectedly"" — Syncthing crashed. Use Start Syncthing. Rate-limited to 1 alert per 5 min.
+
+""API key rejected"" — key doesn't match Syncthing. Re-copy from Web UI.
+
+Sluggish menu — tray probes with a 1.5s TCP check when Syncthing is off.
+
+Log: %LOCALAPPDATA%\SyncthingTray\tray.log (opt out via DiagnosticLogging=0).
+
+——— LINKS ————————————————————————
+
+docs.syncthing.net
+github.com/itsnateai/synctray";
+
+    private readonly string _iniPath;
+    private readonly Action<string, int> _showOsd;
+
+    /// <param name="iniPath">Absolute path to SyncthingTray.ini — used by the Backup button.</param>
+    /// <param name="showOsd">Callback to display an OSD message (text, duration ms) — reuses the tray's OSD rather than MessageBox per the project's notification convention.</param>
+    public HelpForm(string iniPath, Action<string, int> showOsd)
     {
-        _titleFont = new Font("Segoe UI", 10f, FontStyle.Bold);
-        _bodyFont = new Font("Segoe UI", 9f);
-        _btnFont = new Font("Segoe UI", 8f);
+        _iniPath = iniPath;
+        _showOsd = showOsd;
 
         Text = "SyncthingTray Help";
-        FormBorderStyle = FormBorderStyle.FixedToolWindow;
+        FormBorderStyle = FormBorderStyle.FixedDialog;
+        MaximizeBox = false;
+        MinimizeBox = false;
+        ShowIcon = false;
         StartPosition = FormStartPosition.CenterScreen;
         TopMost = true;
         ClientSize = new Size(400, 380);
@@ -31,90 +92,201 @@ internal sealed class HelpForm : Form
         ShowInTaskbar = false;
         AutoScaleMode = AutoScaleMode.Dpi;
 
+        var labelFont = new Font("Segoe UI", 10f, FontStyle.Bold);
+        _fonts.Add(labelFont);
+        var btnFont = new Font("Segoe UI", 8f);
+        _fonts.Add(btnFont);
+
         var lblTitle = new Label
         {
             Text = $"SyncthingTray v{AppConfig.Version}",
-            Font = _titleFont,
+            Font = labelFont,
             ForeColor = FgColor,
             Location = new Point(16, 14),
             AutoSize = true,
         };
         Controls.Add(lblTitle);
 
-        var divider = new Label
+        var topDivider = new Label
         {
             Location = new Point(0, 36),
             Size = new Size(400, 1),
             BackColor = DividerColor,
         };
-        Controls.Add(divider);
+        Controls.Add(topDivider);
 
-        const string helpText =
-            "Tray Icon Actions:\r\n" +
-            "  Double-click & Middle-click \u2014 configurable in Settings\r\n" +
-            "    (Open Web UI, Force Rescan, Pause/Resume, or None)\r\n" +
-            "  Right-click \u2014 Open context menu\r\n" +
-            "\r\n" +
-            "Context Menu:\r\n" +
-            "  Synced Folders \u2014 browse synced folder list\r\n" +
-            "  Force Rescan Now \u2014 trigger rescan on all folders\r\n" +
-            "  Pause/Resume \u2014 toggle syncing on/off\r\n" +
-            "  Start/Stop/Restart \u2014 control Syncthing process\r\n" +
-            "\r\n" +
-            "Settings:\r\n" +
-            "  API Key \u2014 required for status, pause/resume, and\r\n" +
-            "    discovery settings. Find in Syncthing Web UI\r\n" +
-            "    under Actions > Settings > API Key.\r\n" +
-            "  Check Config \u2014 validate settings against Syncthing\r\n" +
-            "\r\n" +
-            "Status:\r\n" +
-            "  Tray tooltip shows sync state, progress, and\r\n" +
-            "  connected device count (e.g. 1/2 devices).\r\n" +
-            "\r\n" +
-            "Syncthing docs: docs.syncthing.net";
-
-        var lblHelp = new Label
+        var textBox = new RichTextBox
         {
-            Text = helpText,
-            Font = _bodyFont,
+            ReadOnly = true,
+            BorderStyle = BorderStyle.None,
+            BackColor = BgColor,
             ForeColor = FgColor,
+            ScrollBars = RichTextBoxScrollBars.Vertical,
+            DetectUrls = false,
+            WordWrap = true,
+            TabStop = false,
             Location = new Point(16, 46),
-            Size = new Size(360, 280),
+            Size = new Size(368, 270),
         };
-        Controls.Add(lblHelp);
+        Controls.Add(textBox);
+        RenderHelp(textBox);
 
+        // Kill default "all text selected when shown" behavior.
+        Shown += (_, _) =>
+        {
+            textBox.SelectionStart = 0;
+            textBox.SelectionLength = 0;
+            textBox.DeselectAll();
+            ActiveControl = null;
+        };
+
+        var btnDivider = new Label
+        {
+            Location = new Point(0, 326),
+            Size = new Size(400, 1),
+            BackColor = DividerColor,
+        };
+        Controls.Add(btnDivider);
+
+        // Three-button row: Docs | Backup Settings | Close.
+        // 16 .. 126 | 145 .. 255 | 274 .. 384 — 19 px gaps, symmetric inside the
+        // 400 px content width.
         var btnDocs = new Button
         {
             Text = "Syncthing Docs",
-            Font = _btnFont,
-            Location = new Point(16, 336),
-            Size = new Size(120, 26),
+            Font = btnFont,
+            Location = new Point(16, 340),
+            Size = new Size(110, 26),
             FlatStyle = FlatStyle.Flat,
             ForeColor = FgColor,
             BackColor = BgColor,
         };
+        btnDocs.FlatAppearance.BorderColor = DividerColor;
         btnDocs.Click += (_, _) =>
         {
             using var p = Process.Start(new ProcessStartInfo("https://docs.syncthing.net") { UseShellExecute = true });
         };
         Controls.Add(btnDocs);
 
+        var btnBackup = new Button
+        {
+            Text = "Backup Settings",
+            Font = btnFont,
+            Location = new Point(145, 340),
+            Size = new Size(110, 26),
+            FlatStyle = FlatStyle.Flat,
+            ForeColor = FgColor,
+            BackColor = BgColor,
+        };
+        btnBackup.FlatAppearance.BorderColor = DividerColor;
+        btnBackup.Click += (_, _) => BackupSettings();
+        Controls.Add(btnBackup);
+
         var btnClose = new Button
         {
             Text = "Close",
-            Font = _btnFont,
-            Location = new Point(260, 336),
-            Size = new Size(120, 26),
+            Font = btnFont,
+            Location = new Point(274, 340),
+            Size = new Size(110, 26),
             FlatStyle = FlatStyle.Flat,
             ForeColor = FgColor,
             BackColor = BgColor,
             DialogResult = DialogResult.Cancel,
         };
+        btnClose.FlatAppearance.BorderColor = DividerColor;
         btnClose.Click += (_, _) => Close();
         Controls.Add(btnClose);
 
         CancelButton = btnClose;
         AcceptButton = btnClose;
+    }
+
+    private void RenderHelp(RichTextBox textBox)
+    {
+        // Track fonts immediately — if any ctor throws (OOM / GDI exhaustion) the
+        // already-constructed ones would otherwise leak their native handles until
+        // the GC finalizer eventually runs.
+        var headerFont = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold);
+        _fonts.Add(headerFont);
+        var bodyFont = new Font("Segoe UI", 9f);
+        _fonts.Add(bodyFont);
+
+        textBox.Clear();
+
+        var body = new StringBuilder();
+
+        void FlushBody()
+        {
+            if (body.Length == 0) return;
+            // Collapse leading blank lines so sections don't stack extra gaps.
+            var text = body.ToString().TrimStart('\r', '\n');
+            body.Clear();
+            if (text.Length == 0) return;
+            textBox.SelectionFont = bodyFont;
+            textBox.SelectionColor = FgColor;
+            textBox.AppendText(text);
+        }
+
+        var lines = s_helpText.Replace("\r\n", "\n").Split('\n');
+        foreach (var raw in lines)
+        {
+            if (raw.StartsWith("\u2014\u2014\u2014") || raw.StartsWith("---"))
+            {
+                FlushBody();
+                var title = raw.Trim().Trim('\u2014', '-', ' ');
+                if (title.Length == 0) continue;
+                textBox.AppendText("\n");
+                textBox.SelectionFont = headerFont;
+                textBox.SelectionColor = HeaderColor;
+                textBox.AppendText(title + "\n\n");
+                continue;
+            }
+
+            body.AppendLine(raw);
+        }
+        FlushBody();
+
+        textBox.SelectionStart = 0;
+        textBox.SelectionLength = 0;
+    }
+
+    /// <summary>
+    /// Copies SyncthingTray.ini to a timestamped sibling file. The INI holds every
+    /// user-visible setting including the Syncthing API key, so a pre-emptive
+    /// backup is the user's only recovery path if the file gets clobbered (failed
+    /// update, disk issue, accidental edit). Destination path is shown in an OSD
+    /// on success. Failures surface the exception message.
+    /// </summary>
+    private void BackupSettings()
+    {
+        try
+        {
+            if (string.IsNullOrEmpty(_iniPath) || !File.Exists(_iniPath))
+            {
+                _showOsd("No settings file to back up yet (first-run state).", 4000);
+                return;
+            }
+
+            var timestamp = DateTime.Now.ToString("yyyyMMdd-HHmmss");
+            var backupPath = _iniPath + ".backup-" + timestamp;
+
+            // Don't overwrite an existing backup with the same name — the timestamp
+            // is to the second so a genuine collision means the user clicked twice
+            // within one second; either copy is fine but we refuse silently to
+            // surface that (rather than clobber).
+            if (File.Exists(backupPath))
+            {
+                _showOsd("Backup already exists for this second — try again.", 4000);
+                return;
+            }
+
+            File.Copy(_iniPath, backupPath, overwrite: false);
+            _showOsd("Settings backed up: " + Path.GetFileName(backupPath), 5000);
+        }
+        catch (Exception ex)
+        {
+            _showOsd("Backup failed: " + ex.Message, 5000);
+        }
     }
 
     protected override void Dispose(bool disposing)
@@ -124,9 +296,8 @@ internal sealed class HelpForm : Form
             _disposed = true;
             if (disposing)
             {
-                _titleFont.Dispose();
-                _bodyFont.Dispose();
-                _btnFont.Dispose();
+                foreach (var f in _fonts) f.Dispose();
+                _fonts.Clear();
             }
         }
         base.Dispose(disposing);

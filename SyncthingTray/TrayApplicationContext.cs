@@ -43,6 +43,36 @@ internal sealed class TrayApplicationContext : ApplicationContext
     // set must also see the latest `_folders` assignment done immediately before it.
     private volatile bool _foldersLoadedSuccessfully;
     private bool _paused;
+
+    // Absolute UTC time when a timed pause should auto-resume. null = no timed pause
+    // active (either not paused at all, or an "Until resumed" pause with no deadline).
+    // Using absolute wall-clock time (rather than trusting WinForms Timer.Interval)
+    // makes the pause survive sleep/hibernate correctly — MWB pattern.
+    private DateTime? _pauseResumeAtUtc;
+
+    // Original duration of the active pause: 0 = untimed, 5 or 30 = minutes.
+    // Only meaningful when _paused is true. Used to set Checked marks on the
+    // pause-duration submenu items.
+    private int _activePauseMinutes;
+
+    // Set during RestorePauseStateOnStartup when we inherit an active pause from
+    // a prior session. Syncthing's /rest/system/pause is runtime-only state, so
+    // after its process restart the daemon has forgotten it was paused. The next
+    // poll-tick re-POSTs pause to reconcile Syncthing with our sidecar, then
+    // clears this flag — after which the normal external-resume detection takes
+    // over and any user-initiated resume via Web UI propagates correctly.
+    private bool _pauseNeedsReapply;
+
+    // One-shot latch for the "Start browser when Syncthing launches" setting.
+    // Set in StartAfterDelay if the checkbox is on; cleared as soon as the first
+    // poll confirms Syncthing is reachable and OpenWebUI is fired. Lives outside
+    // LaunchSyncthing because the browser should also pop when the tray restarts
+    // against an already-running Syncthing (previously the setting silently
+    // no-op'd that case).
+    private bool _pendingOpenWebUI;
+
+    private readonly System.Windows.Forms.Timer _pauseTimer;
+    private string _pauseStatePath = string.Empty;
     private int _connectedCount;
     private int _totalDevices;
     private bool _autoPaused;
@@ -90,6 +120,18 @@ internal sealed class TrayApplicationContext : ApplicationContext
     // Folder cache
     private FolderInfo[] _folders = [];
 
+    // Maps Syncthing deviceID -> human-readable name. Populated from /rest/config/devices
+    // on each LoadFolders call. Cached across calls so a transient roster-fetch failure
+    // doesn't suddenly flip device headers back to shortened IDs; only a later successful
+    // fetch replaces the cache.
+    private Dictionary<string, string> _deviceRoster = new(StringComparer.Ordinal);
+
+    // Syncthing's own device ID for this machine. Used to exclude "self" from the
+    // folder.devices lists when grouping, so folders don't all appear under a
+    // local-device header. Fetched once from /rest/system/status — immutable for the
+    // process lifetime of a given Syncthing instance.
+    private string _myDeviceId = string.Empty;
+
     private bool _disposed;
     private bool _stopping;
 
@@ -133,6 +175,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         _pollTimer = new System.Windows.Forms.Timer { Interval = 10000 };
         _pollTimer.Tick += OnPollTick;
+
+        // Pause auto-resume timer. Interval is re-armed each tick against the
+        // absolute UTC deadline so wake-from-sleep doesn't drift the resume time.
+        _pauseTimer = new System.Windows.Forms.Timer();
+        _pauseTimer.Tick += OnPauseTimerTick;
+        _pauseStatePath = Path.Combine(appDir, "pause.dat");
+        RestorePauseStateOnStartup();
 
         // Startup delay — use a timer so the message pump stays alive
         if (_config.StartupDelay > 0)
@@ -223,6 +272,17 @@ internal sealed class TrayApplicationContext : ApplicationContext
         if (e.Mode != Microsoft.Win32.PowerModes.Resume) return;
         TrayLog.Info("PowerMode: Resume — invalidating caches + polling.");
         InvalidateRunningCache();
+
+        // A 30-min pause through a 2-hr sleep must resume at wake, not 30 min
+        // after wake. The poll-tick picks up Syncthing's state eventually, but
+        // firing an explicit deadline check here avoids a 10s-window stale menu.
+        if (_paused && _pauseResumeAtUtc is DateTime due)
+        {
+            if (DateTime.UtcNow >= due)
+                RunOnUi(() => { if (!_disposed) MenuResume(); });
+            else
+                RunOnUi(() => { if (!_disposed) StartOrRearmPauseTimer(); });
+        }
         // Marshal to UI thread — SystemEvents.PowerModeChanged fires on a
         // background thread that the CLR pools for SystemEvents callbacks.
         RunOnUi(() =>
@@ -244,6 +304,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         if (!IsSyncthingRunning())
             LaunchSyncthing();
+
+        // Latch a browser-open on first reachable poll, regardless of whether we
+        // cold-launched Syncthing or it was already up. Cleared in the poll-tick.
+        if (_config.StartBrowser)
+            _pendingOpenWebUI = true;
 
         _iconTimer.Start();
         _pollTimer.Start();
@@ -433,21 +498,15 @@ internal sealed class TrayApplicationContext : ApplicationContext
         statusItem.Enabled = false;
         menu.Items.Add(_config.WebUI, null, (_, _) => OpenWebUI());
 
-        // Synced Folders submenu
+        // Synced Folders submenu — grouped by device prefix. Any label prefix (first
+        // word before a space or underscore) shared by 2+ folders becomes a disabled
+        // header with stripped child labels; singletons drop into an unnamed bucket
+        // at the bottom. Heuristic matches how users name device-scoped folders
+        // (s20_Dcim, s24_Pictures, tablet_Downloads) — no device-roster API call needed.
         if (_folders.Length > 0)
         {
             var folderItem = new ToolStripMenuItem("Synced Folders");
-            foreach (var f in _folders)
-            {
-                var path = f.Path;
-                var folderId = f.Id;
-                var subItem = new ToolStripMenuItem(f.Label);
-                subItem.DropDownItems.Add("Open Folder", null, (_, _) => OpenFolder(path));
-                subItem.DropDownItems.Add("Rescan", null, (_, _) => MenuRescanFolder(folderId));
-                folderItem.DropDownItems.Add(subItem);
-            }
-            folderItem.DropDownItems.Add(new ToolStripSeparator());
-            folderItem.DropDownItems.Add("Refresh List", null, (_, _) => LoadFolders());
+            BuildSyncedFoldersMenu(folderItem);
             menu.Items.Add(folderItem);
         }
 
@@ -461,13 +520,34 @@ internal sealed class TrayApplicationContext : ApplicationContext
         menu.Items.Add("Settings...", null, (_, _) => OpenSettings());
         menu.Items.Add(new ToolStripSeparator());
 
-        // Pause/Resume
+        // Pause/Resume. When paused, the direct Resume item stays top-level for a
+        // single-click resume; when not paused, the Pause submenu offers 5 min /
+        // 30 min / Until resumed. MWB pattern, adapted so that the common case
+        // (click to resume) remains one click rather than a submenu dive.
         if (running)
         {
             if (_paused)
-                menu.Items.Add("Resume Syncing", null, (_, _) => MenuResume());
+            {
+                string resumeLabel = "Resume Syncing";
+                if (_pauseResumeAtUtc is DateTime due)
+                {
+                    var remaining = due - DateTime.UtcNow;
+                    if (remaining.TotalSeconds > 0)
+                        resumeLabel = $"Resume Syncing (auto in {FormatPauseRemaining(remaining)})";
+                }
+                menu.Items.Add(resumeLabel, null, (_, _) => MenuResume());
+            }
             else
-                menu.Items.Add("Pause Syncing", null, (_, _) => MenuPause());
+            {
+                // "Until resumed" sits at the top as the primary/default action;
+                // timed options live below a separator as secondary choices.
+                var pauseItem = new ToolStripMenuItem("Pause Syncing");
+                pauseItem.DropDownItems.Add("Until resumed", null, (_, _) => MenuPause(0));
+                pauseItem.DropDownItems.Add(new ToolStripSeparator());
+                pauseItem.DropDownItems.Add("5 minutes", null, (_, _) => MenuPause(5));
+                pauseItem.DropDownItems.Add("30 minutes", null, (_, _) => MenuPause(30));
+                menu.Items.Add(pauseItem);
+            }
             menu.Items.Add(new ToolStripSeparator());
         }
 
@@ -487,6 +567,143 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         // Dispose old menu — Dispose() cascades to all owned items and submenus
         oldMenu?.Dispose();
+    }
+
+    // Short, human-readable handle for a device ID when no friendly name is known.
+    // Syncthing device IDs are base32 with hyphen groups — the first group reads
+    // cleanly as a stable handle (e.g. "ABCDEFG" for ID "ABCDEFG-HIJKLMN-...").
+    private static string ShortenDeviceId(string id)
+    {
+        if (string.IsNullOrEmpty(id)) return "unknown";
+        int dash = id.IndexOf('-');
+        if (dash > 0) return id[..dash];
+        return id.Length > 7 ? id[..7] : id;
+    }
+
+    /// <summary>
+    /// Pulls the device roster from /rest/config/devices and this Syncthing instance's
+    /// own myID from /rest/system/status. Both are used by BuildSyncedFoldersMenu to
+    /// group folders under human-readable device headers. Failures leave the prior
+    /// cached values in place — better to show stale names than to drop back to
+    /// shortened IDs on a transient blip.
+    /// </summary>
+    private void LoadDeviceRosterAndMyId()
+    {
+        // myID only needs fetching once per process — Syncthing's device identity
+        // is immutable for a given install (tied to a self-signed cert).
+        if (string.IsNullOrEmpty(_myDeviceId))
+        {
+            try
+            {
+                var (s, body) = _api.Get("/rest/system/status", timeoutMs: 1500);
+                if (s == 200)
+                {
+                    using var doc = JsonDocument.Parse(body);
+                    if (doc.RootElement.TryGetProperty("myID", out var idEl))
+                        _myDeviceId = idEl.GetString() ?? string.Empty;
+                }
+            }
+            catch (Exception ex)
+            {
+                TrayLog.Warn("LoadDeviceRosterAndMyId(myID): " + ex.Message);
+            }
+        }
+
+        try
+        {
+            var (s, body) = _api.Get("/rest/config/devices", timeoutMs: 1500);
+            if (s != 200) return;
+            using var doc = JsonDocument.Parse(body);
+            if (doc.RootElement.ValueKind != JsonValueKind.Array) return;
+
+            var next = new Dictionary<string, string>(StringComparer.Ordinal);
+            foreach (var d in doc.RootElement.EnumerateArray())
+            {
+                string id = d.TryGetProperty("deviceID", out var i) ? i.GetString() ?? string.Empty : string.Empty;
+                string name = d.TryGetProperty("name", out var n) ? n.GetString() ?? string.Empty : string.Empty;
+                if (id.Length == 0) continue;
+                if (name.Length == 0) name = ShortenDeviceId(id);
+                next[id] = name;
+            }
+            _deviceRoster = next;
+        }
+        catch (Exception ex)
+        {
+            TrayLog.Warn("LoadDeviceRosterAndMyId(devices): " + ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// Builds the Synced Folders submenu grouped by remote device, using structured
+    /// data from Syncthing's config (folder.devices + device roster) rather than
+    /// parsing folder labels. A folder shared with N remote devices appears under N
+    /// device headers — this is by design so every header's contents are complete.
+    /// Folders with no remote devices fall into a "Local only" bucket at the bottom.
+    /// </summary>
+    private void BuildSyncedFoldersMenu(ToolStripMenuItem folderItem)
+    {
+        // deviceName -> folders shared with that device (dups across headers are
+        // expected for multi-device folders).
+        var byDevice = new Dictionary<string, List<FolderInfo>>(StringComparer.Ordinal);
+        var localOnly = new List<FolderInfo>();
+
+        foreach (var f in _folders)
+        {
+            // Filter self out. If _myDeviceId isn't known yet (first load failed the
+            // system/status fetch), the local device leaks in as its own group — ugly
+            // but not broken; resolves itself on the next successful LoadFolders.
+            var remotes = f.DeviceIds.Where(id => id.Length > 0 && id != _myDeviceId).ToArray();
+            if (remotes.Length == 0)
+            {
+                localOnly.Add(f);
+                continue;
+            }
+            foreach (var id in remotes)
+            {
+                var name = _deviceRoster.TryGetValue(id, out var n) && n.Length > 0
+                    ? n
+                    : ShortenDeviceId(id);
+                if (!byDevice.TryGetValue(name, out var list))
+                    byDevice[name] = list = new List<FolderInfo>();
+                list.Add(f);
+            }
+        }
+
+        var orderedDeviceNames = byDevice.Keys
+            .OrderBy(k => k, StringComparer.CurrentCultureIgnoreCase)
+            .ToArray();
+
+        void EmitFolder(FolderInfo f)
+        {
+            var path = f.Path;
+            var folderId = f.Id;
+            var subItem = new ToolStripMenuItem(f.Label);
+            subItem.DropDownItems.Add("Open Folder", null, (_, _) => OpenFolder(path));
+            subItem.DropDownItems.Add("Rescan", null, (_, _) => MenuRescanFolder(folderId));
+            folderItem.DropDownItems.Add(subItem);
+        }
+
+        bool firstGroup = true;
+        foreach (var deviceName in orderedDeviceNames)
+        {
+            if (!firstGroup) folderItem.DropDownItems.Add(new ToolStripSeparator());
+            firstGroup = false;
+            folderItem.DropDownItems.Add(new ToolStripMenuItem(deviceName) { Enabled = false });
+            foreach (var f in byDevice[deviceName].OrderBy(x => x.Label, StringComparer.CurrentCultureIgnoreCase))
+                EmitFolder(f);
+        }
+
+        if (localOnly.Count > 0)
+        {
+            if (!firstGroup) folderItem.DropDownItems.Add(new ToolStripSeparator());
+            firstGroup = false;
+            folderItem.DropDownItems.Add(new ToolStripMenuItem("Local only") { Enabled = false });
+            foreach (var f in localOnly.OrderBy(x => x.Label, StringComparer.CurrentCultureIgnoreCase))
+                EmitFolder(f);
+        }
+
+        folderItem.DropDownItems.Add(new ToolStripSeparator());
+        folderItem.DropDownItems.Add("Refresh List", null, (_, _) => LoadFolders());
     }
 
     // --- Polling ---
@@ -546,6 +763,15 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _syncDetail = string.Empty;
             UpdateTooltip();
             return;
+        }
+
+        // One-shot: once Syncthing is running + reachable, honor the "Start browser
+        // when Syncthing launches" setting regardless of whether we cold-launched
+        // Syncthing or joined an existing process. Fires at most once per tray session.
+        if (_pendingOpenWebUI && _api.IsReachable())
+        {
+            _pendingOpenWebUI = false;
+            RunOnUi(OpenWebUI);
         }
 
         // 1. Sync completion
@@ -664,7 +890,30 @@ internal sealed class TrayApplicationContext : ApplicationContext
                     _totalDevices = deviceCount;
 
                     if (deviceCount > 0)
-                        _paused = allPaused;
+                    {
+                        bool wasPaused = _paused;
+                        // First poll after inheriting pause from pause.dat: re-apply
+                        // to Syncthing before reconciling local state. If the reapply
+                        // succeeds, Syncthing will report paused=true on this very
+                        // poll result — but since `allPaused` was already computed from
+                        // the stale pre-reapply /rest response, we branch on the
+                        // reapply flag instead of the current `allPaused` value.
+                        if (_pauseNeedsReapply && !allPaused)
+                        {
+                            ReapplyInheritedPause();
+                            // Keep _paused = true; the next poll will confirm Syncthing
+                            // matches. Skip the external-resume branch for this tick.
+                        }
+                        else
+                        {
+                            _paused = allPaused;
+                            // External resume (user hit Resume in Web UI, or our deadline
+                            // already fired and Syncthing reflects it): drop our timer +
+                            // sidecar so a stale deadline doesn't double-fire MenuResume().
+                            if (wasPaused && !_paused)
+                                ClearPauseState();
+                        }
+                    }
 
                     // Prune stale device entries — if a device was removed from
                     // Syncthing config, it won't reappear in this response; drop it
@@ -763,6 +1012,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
                         {
                             _paused = true;
                             _autoPaused = true;
+                            // Auto-pause has no deadline — it resumes on the next network
+                            // category transition, not on a clock. Unify the state so the
+                            // menu renders "Resume Syncing" (no countdown).
+                            _activePauseMinutes = 0;
+                            _pauseResumeAtUtc = null;
+                            _pauseTimer.Stop();
+                            PersistPauseState();
                             UpdateTrayIcon();
                             BuildMenu();
                             ShowOsd("Auto-paused: public network detected", 3000);
@@ -778,8 +1034,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
                         var (status, _) = _api.Post("/rest/system/resume");
                         if (status == 200)
                         {
-                            _paused = false;
-                            _autoPaused = false;
+                            ClearPauseState();
                             UpdateTrayIcon();
                             BuildMenu();
                             ShowOsd("Auto-resumed: private network detected", 3000);
@@ -941,15 +1196,36 @@ internal sealed class TrayApplicationContext : ApplicationContext
                         string fLabel = folder.TryGetProperty("label", out var lblEl) ? lblEl.GetString() ?? string.Empty : string.Empty;
                         string fPath = folder.TryGetProperty("path", out var pathEl) ? pathEl.GetString() ?? string.Empty : string.Empty;
 
+                        // Parse the devices[] array — each entry is {deviceID, introducedBy, ...}.
+                        // We keep only the IDs; names resolve via the device roster fetched below.
+                        var deviceIds = new List<string>();
+                        if (folder.TryGetProperty("devices", out var devsEl) && devsEl.ValueKind == JsonValueKind.Array)
+                        {
+                            foreach (var dev in devsEl.EnumerateArray())
+                            {
+                                if (dev.TryGetProperty("deviceID", out var didEl))
+                                {
+                                    var did = didEl.GetString();
+                                    if (!string.IsNullOrEmpty(did)) deviceIds.Add(did);
+                                }
+                            }
+                        }
+
                         string displayName = fLabel.Length > 0 ? fLabel : fId;
                         if (fPath.Length > 0)
-                            list.Add(new FolderInfo(fId, displayName, fPath));
+                            list.Add(new FolderInfo(fId, displayName, fPath, deviceIds.ToArray()));
                     }
                     _folders = list.ToArray();
+
+                    // Refresh the device roster + myID alongside the folder list so the
+                    // menu can group by human-readable device name. Failures don't abort
+                    // the folder load — degraded mode is grouping by shortened device ID.
+                    LoadDeviceRosterAndMyId();
+
                     // Success latch — even an empty folder list counts. Prevents the poll
                     // tick from re-firing LoadFolders every 10s for zero-folder users.
                     _foldersLoadedSuccessfully = true;
-                    TrayLog.Info($"LoadFolders: HTTP 200, {_folders.Length} folder(s) loaded.");
+                    TrayLog.Info($"LoadFolders: HTTP 200, {_folders.Length} folder(s) loaded, {_deviceRoster.Count} device(s) in roster.");
 
                     // Prune per-folder error tracking for folders no longer configured —
                     // otherwise _folderPullErrors grows unbounded over months of churn.
@@ -1004,14 +1280,35 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void OpenFolder(string path)
     {
-        if (Directory.Exists(path))
-        {
-            using var p = Process.Start(new ProcessStartInfo("explorer.exe", path) { UseShellExecute = false });
-        }
-        else
+        // Skip the existence check on UNC / network paths — Directory.Exists
+        // against an unreachable share can block the UI thread for the full
+        // SMB timeout (~20-30 s). For local paths the check is sub-millisecond
+        // and lets us surface a friendly "not found" OSD instead of the shell's
+        // error dialog.
+        bool isUnc = path.StartsWith(@"\\", StringComparison.Ordinal);
+        if (!isUnc && !Directory.Exists(path))
         {
             ShowOsd($"Folder not found: {path}", 3000);
+            return;
         }
+
+        // Fire on a pool thread so the context menu dismisses immediately.
+        // UseShellExecute=true lets the Windows shell reuse any already-running
+        // Explorer process — meaningfully faster than spawning explorer.exe via
+        // a fresh Process.Start(fileName: "explorer.exe") which always forks a
+        // new process (100-500 ms on a cold cache).
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                using var p = Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
+            }
+            catch (Exception ex)
+            {
+                RunOnUi(() => ShowOsd($"Failed to open folder: {ex.Message}", 4000));
+                TrayLog.Warn($"OpenFolder({path}) threw: {ex.Message}");
+            }
+        });
     }
 
     private void OpenSettings()
@@ -1053,16 +1350,24 @@ internal sealed class TrayApplicationContext : ApplicationContext
         return false;
     }
 
+    // Click-path (double-click / middle-click) default is untimed pause — preserves
+    // the muscle memory from pre-timed-pause versions where a single click toggled
+    // indefinite pause/resume.
     private void TogglePause()
     {
         if (IsOverclickGuarded(800)) return;
         if (_paused)
             MenuResume();
         else
-            MenuPause();
+            MenuPause(0);
     }
 
-    private void MenuPause()
+    /// <summary>
+    /// Enter (or re-arm) a pause. minutes = 0 means "Until resumed" (no deadline).
+    /// Re-arming while already paused just updates the timer to the new duration
+    /// without re-posting to Syncthing.
+    /// </summary>
+    private void MenuPause(int minutes)
     {
         if (string.IsNullOrEmpty(_config.ApiKey))
         {
@@ -1071,16 +1376,35 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
         try
         {
-            var (status, _) = _api.Post("/rest/system/pause");
-            if (status != 200)
+            // Skip the HTTP call if Syncthing is already paused — avoids a redundant
+            // request when switching 5min → 30min on an active pause.
+            if (!_paused)
             {
-                ShowOsd($"Pause failed (HTTP {status})", 3000);
-                return;
+                var (status, _) = _api.Post("/rest/system/pause");
+                if (status != 200)
+                {
+                    ShowOsd($"Pause failed (HTTP {status})", 3000);
+                    return;
+                }
             }
+
             _paused = true;
+            _activePauseMinutes = minutes;
+            _pauseTimer.Stop();
+            if (minutes > 0)
+            {
+                _pauseResumeAtUtc = DateTime.UtcNow.AddMinutes(minutes);
+                StartOrRearmPauseTimer();
+            }
+            else
+            {
+                _pauseResumeAtUtc = null;
+            }
+            PersistPauseState();
+
             UpdateTrayIcon();
             BuildMenu();
-            ShowOsd("Syncing paused", 3000);
+            ShowOsd($"Syncing paused ({FormatPauseDuration(minutes)})", 3000);
         }
         catch
         {
@@ -1103,7 +1427,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 ShowOsd($"Resume failed (HTTP {status})", 3000);
                 return;
             }
-            _paused = false;
+            ClearPauseState();
             UpdateTrayIcon();
             BuildMenu();
             ShowOsd("Syncing resumed", 3000);
@@ -1111,6 +1435,220 @@ internal sealed class TrayApplicationContext : ApplicationContext
         catch
         {
             ShowOsd("Failed to resume syncing", 3000);
+        }
+    }
+
+    /// <summary>
+    /// Reset all pause-related state. Called after a successful resume (manual
+    /// or auto) and when the poll-tick detects Syncthing was resumed externally.
+    /// </summary>
+    private void ClearPauseState()
+    {
+        _paused = false;
+        _autoPaused = false;
+        _activePauseMinutes = 0;
+        _pauseResumeAtUtc = null;
+        _pauseNeedsReapply = false;
+        _pauseTimer.Stop();
+        DeletePauseStateFile();
+    }
+
+    private void StartOrRearmPauseTimer()
+    {
+        if (_pauseResumeAtUtc is not DateTime due) return;
+        var msUntil = (long)(due - DateTime.UtcNow).TotalMilliseconds;
+        // WinForms Timer.Interval must be ≥ 1. Clamp short deadlines to 1s so the
+        // tick handler runs soon and fires the auto-resume path.
+        _pauseTimer.Interval = (int)Math.Max(1000, Math.Min(int.MaxValue, msUntil));
+        _pauseTimer.Start();
+    }
+
+    private void OnPauseTimerTick(object? sender, EventArgs e)
+    {
+        if (_disposed) return;
+        _pauseTimer.Stop();
+        if (_pauseResumeAtUtc is not DateTime due)
+            return;
+
+        if (DateTime.UtcNow >= due)
+        {
+            TrayLog.Info("Pause timer elapsed — auto-resuming.");
+            MenuResume();
+        }
+        else
+        {
+            // Early tick (shouldn't happen, but guard — a Timer with extreme Interval
+            // values can fire prematurely). Re-arm for the remaining slice.
+            StartOrRearmPauseTimer();
+        }
+    }
+
+    private static string FormatPauseDuration(int minutes) => minutes switch
+    {
+        0 => "until resumed",
+        1 => "1 minute",
+        _ => $"{minutes} minutes",
+    };
+
+    private static string FormatPauseRemaining(TimeSpan remaining)
+    {
+        if (remaining.TotalMinutes >= 2)
+            return $"{(int)Math.Ceiling(remaining.TotalMinutes)} min";
+        if (remaining.TotalSeconds >= 60)
+            return "1 min";
+        var secs = Math.Max(1, (int)Math.Ceiling(remaining.TotalSeconds));
+        return $"{secs} sec";
+    }
+
+    private void PersistPauseState()
+    {
+        try
+        {
+            if (!_paused)
+            {
+                DeletePauseStateFile();
+                return;
+            }
+            // Line 1: minutes (0 = untimed). Line 2: resume-at ticks (empty for untimed).
+            // Line 3: auto-pause flag (1 if this pause was triggered by network auto-pause,
+            // 0 if user-initiated). The auto flag lets RestorePauseStateOnStartup drop an
+            // inherited auto-pause when the network is no longer public — otherwise a
+            // reboot mid-auto-pause would leave sync stuck paused even after returning
+            // to a private network.
+            var ticksLine = _pauseResumeAtUtc is DateTime due ? due.Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture) : string.Empty;
+            var autoLine = _autoPaused ? "1" : "0";
+            var body = $"{_activePauseMinutes}\n{ticksLine}\n{autoLine}";
+            File.WriteAllText(_pauseStatePath, body);
+        }
+        catch (Exception ex)
+        {
+            TrayLog.Warn($"PersistPauseState: {ex.Message}");
+        }
+    }
+
+    private void DeletePauseStateFile()
+    {
+        try
+        {
+            if (File.Exists(_pauseStatePath)) File.Delete(_pauseStatePath);
+        }
+        catch (Exception ex)
+        {
+            TrayLog.Warn($"DeletePauseStateFile: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Called once from the ctor. If pause.dat exists, re-attach the timer and
+    /// mark that Syncthing needs to be re-paused on the first successful poll
+    /// (Syncthing loses its runtime pause state across its own restart / a
+    /// reboot). Expired timed pauses are dropped so we don't re-pause a deadline
+    /// that's already in the past.
+    /// </summary>
+    private void RestorePauseStateOnStartup()
+    {
+        try
+        {
+            if (!File.Exists(_pauseStatePath)) return;
+            var lines = File.ReadAllLines(_pauseStatePath);
+            if (lines.Length < 1 || !int.TryParse(lines[0], out int minutes))
+            {
+                TrayLog.Warn("RestorePauseStateOnStartup: malformed pause.dat — deleting.");
+                DeletePauseStateFile();
+                return;
+            }
+
+            // Parse the auto-paused flag (line 3). Missing = legacy 2-line format from
+            // earlier v2.2.12 builds — default to false (treat as manual pause).
+            bool wasAutoPaused = lines.Length >= 3 && lines[2].Trim() == "1";
+
+            // Network-adaptive restore: if this pause was triggered by auto-pause on
+            // public wifi but we're now on a private/domain network, the pause reason
+            // is already gone. Drop the inherited pause so sync resumes automatically
+            // on boot rather than leaving the user manually clicking Resume. WMI
+            // unavailable (cat == -1) means we can't confirm network state — conservative
+            // default is to keep the pause and let the user decide.
+            if (wasAutoPaused && _config.NetworkAutoPause)
+            {
+                int cat = GetNetworkCategory();
+                // NetworkCategory: 0 = Public, 1 = Private, 2 = DomainAuthenticated.
+                if (cat > 0)
+                {
+                    TrayLog.Info($"RestorePauseStateOnStartup: inherited auto-pause but network is now private (cat={cat}) — dropping stale pause.");
+                    DeletePauseStateFile();
+                    return;
+                }
+                // cat == 0 (still public) or cat == -1 (WMI down): fall through, restore pause.
+            }
+
+            if (minutes > 0)
+            {
+                if (lines.Length < 2 || !long.TryParse(lines[1], out long ticks))
+                {
+                    TrayLog.Warn("RestorePauseStateOnStartup: timed pause missing ticks — deleting.");
+                    DeletePauseStateFile();
+                    return;
+                }
+                var due = new DateTime(ticks, DateTimeKind.Utc);
+                if (due - DateTime.UtcNow <= TimeSpan.FromSeconds(5))
+                {
+                    TrayLog.Info("RestorePauseStateOnStartup: deadline already passed — dropping stale pause.");
+                    DeletePauseStateFile();
+                    return;
+                }
+                _activePauseMinutes = minutes;
+                _pauseResumeAtUtc = due;
+                StartOrRearmPauseTimer();
+            }
+            else
+            {
+                _activePauseMinutes = 0;
+                _pauseResumeAtUtc = null;
+            }
+
+            _paused = true;
+            _autoPaused = wasAutoPaused;
+            _pauseNeedsReapply = true;
+            TrayLog.Info($"RestorePauseStateOnStartup: inherited pause ({FormatPauseDuration(minutes)}, auto={wasAutoPaused}); Syncthing will be re-paused on first successful poll.");
+        }
+        catch (Exception ex)
+        {
+            TrayLog.Warn($"RestorePauseStateOnStartup: {ex.Message}");
+            DeletePauseStateFile();
+        }
+    }
+
+    /// <summary>
+    /// Called from the poll-tick once Syncthing is confirmed reachable. Re-POSTs
+    /// /rest/system/pause to reconcile Syncthing's runtime state with our sidecar,
+    /// then drops the reapply flag so the normal external-resume detection resumes
+    /// its regularly scheduled programming.
+    /// </summary>
+    private void ReapplyInheritedPause()
+    {
+        if (!_pauseNeedsReapply) return;
+        if (string.IsNullOrEmpty(_config.ApiKey))
+        {
+            // Can't act without an API key. Leave the flag set so a later key
+            // entry + poll cycle can still reconcile.
+            return;
+        }
+        try
+        {
+            var (status, _) = _api.Post("/rest/system/pause");
+            if (status == 200)
+            {
+                _pauseNeedsReapply = false;
+                TrayLog.Info("ReapplyInheritedPause: Syncthing re-paused from prior session.");
+            }
+            else
+            {
+                TrayLog.Warn($"ReapplyInheritedPause: HTTP {status} — will retry next poll.");
+            }
+        }
+        catch (Exception ex)
+        {
+            TrayLog.Warn($"ReapplyInheritedPause: {ex.Message}");
         }
     }
 
@@ -1219,7 +1757,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         try
         {
-            var args = _config.StartBrowser ? string.Empty : "--no-browser";
+            // Tray owns browser-opening (see _pendingOpenWebUI). Always pass
+            // --no-browser so Syncthing doesn't race with us, and so restart-the-
+            // tray-while-Syncthing-is-running still honors the setting.
+            const string args = "--no-browser";
             var dir = Path.GetDirectoryName(_config.SyncExe) ?? string.Empty;
             var psi = new ProcessStartInfo
             {
@@ -1269,13 +1810,19 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void StopSyncthingCore()
     {
-        // Graceful: REST API shutdown
+        // Graceful: REST API shutdown. Syncthing acks the shutdown POST as soon as
+        // it queues the shutdown internally — it doesn't wait for full process
+        // teardown before responding — so a 2s timeout is plenty. The 5s default
+        // is what used to make the tray close feel frozen when a poll-tick held
+        // the keep-alive connection.
         if (!string.IsNullOrEmpty(_config.ApiKey))
         {
             try
             {
-                _api.Post("/rest/system/shutdown");
-                for (int i = 0; i < 50; i++)
+                _api.Post("/rest/system/shutdown", timeoutMs: 2000);
+                // Short wait for the process to actually exit. 20×100ms = 2s cap;
+                // if Syncthing's still around after that we fall through to kill.
+                for (int i = 0; i < 20; i++)
                 {
                     InvalidateRunningCache();
                     if (!IsSyncthingRunning()) return;
@@ -1460,6 +2007,16 @@ internal sealed class TrayApplicationContext : ApplicationContext
         // Intentional shutdown is by definition stable — clear the sentinel so the
         // next launch doesn't falsely warn about a crash that never happened.
         UpdateDialog.TryDeleteCrashSentinel();
+
+        // Stop timers BEFORE the shutdown call. Otherwise a poll-tick that fires
+        // mid-shutdown can queue a GET on the HttpClient's single keep-alive
+        // connection to localhost:8384, and the /rest/system/shutdown POST waits
+        // behind it (HTTP/1.1 serializes per-connection). That's what turns a
+        // normally-snappy close into a several-second freeze.
+        try { _pollTimer.Stop(); } catch { /* already disposed */ }
+        try { _iconTimer.Stop(); } catch { /* already disposed */ }
+        try { _pauseTimer.Stop(); } catch { /* already disposed */ }
+
         if (_config.StopOnExit)
             StopSyncthing();
         Dispose();
@@ -1484,6 +2041,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 _iconTimer.Dispose();
                 _pollTimer.Stop();
                 _pollTimer.Dispose();
+                _pauseTimer.Stop();
+                _pauseTimer.Dispose();
 
                 _trayIcon.Visible = false;
                 _trayIcon.ContextMenuStrip?.Dispose();
@@ -1544,5 +2103,5 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     // --- Data types ---
 
-    private sealed record FolderInfo(string Id, string Label, string Path);
+    private sealed record FolderInfo(string Id, string Label, string Path, string[] DeviceIds);
 }
