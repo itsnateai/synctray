@@ -47,7 +47,13 @@ internal sealed class UpdateDialog : Form
     public UpdateDialog()
     {
         Text = $"{AppName} — Update";
-        FormBorderStyle = FormBorderStyle.FixedToolWindow;
+        // FixedDialog (not FixedToolWindow) + ShowIcon=false matches the chrome
+        // used by SettingsForm and HelpForm — a standard full-size Windows X
+        // button rather than the cramped tool-window caption. AutoScaleMode=Dpi
+        // keeps this dialog's absolute-pixel layout honest at 125/150/200% DPI
+        // (it inherited the default `Font` scaling and skewed visually on HiDPI).
+        FormBorderStyle = FormBorderStyle.FixedDialog;
+        ShowIcon = false;
         MaximizeBox = false;
         MinimizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
@@ -56,6 +62,7 @@ internal sealed class UpdateDialog : Form
         BackColor = BgColor;
         ForeColor = FgColor;
         ShowInTaskbar = false;
+        AutoScaleMode = AutoScaleMode.Dpi;
 
         _boldFont = new Font("Segoe UI", 9.5f, FontStyle.Bold);
         _italicFont = new Font("Segoe UI", 7.5f, FontStyle.Italic);
@@ -101,10 +108,15 @@ internal sealed class UpdateDialog : Form
         _progressOuter.Controls.Add(_progressFill);
         Controls.Add(_progressOuter);
 
+        // Two-button row laid out to match SettingsForm/HelpForm conventions:
+        // both buttons 110 px wide, ending at x=406 (16 px right margin on a
+        // 420 px form — mirrors the other dialogs' right-aligned 16 px margin).
+        // Pre-v2.2.30 the buttons were 110/80 with a 45 px right margin, which
+        // read as "a bit off" next to the other two dialogs.
         _btnAction = new Button
         {
             Text = "Upgrade Now",
-            Location = new Point(155, 112),
+            Location = new Point(166, 112),
             Size = new Size(110, 32),
             Visible = false,
             FlatStyle = FlatStyle.Flat,
@@ -118,12 +130,13 @@ internal sealed class UpdateDialog : Form
         _btnCancel = new Button
         {
             Text = "Cancel",
-            Location = new Point(295, 112),
-            Size = new Size(80, 32),
+            Location = new Point(296, 112),
+            Size = new Size(110, 32),
             FlatStyle = FlatStyle.Flat,
             ForeColor = FgColor,
             BackColor = BgColor,
             Font = _btnFont,
+            DialogResult = DialogResult.Cancel,
         };
         _btnCancel.Click += (_, _) =>
         {
@@ -132,6 +145,10 @@ internal sealed class UpdateDialog : Form
             Close();
         };
         Controls.Add(_btnCancel);
+
+        // Esc closes the dialog (was never wired — CancelButton is the form-level
+        // property WinForms needs for Esc to actually fire Cancel).
+        CancelButton = _btnCancel;
 
         _marqueeTimer = new System.Windows.Forms.Timer { Interval = 30 };
         _marqueeTimer.Tick += (_, _) =>

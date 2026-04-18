@@ -4,6 +4,14 @@
 
 All notable changes to SyncthingTray are documented here.
 
+## v2.2.30 — 2026-04-18
+
+### Update dialog polish
+- **Chrome now matches Settings and Help.** The Update dialog was using `FormBorderStyle.FixedToolWindow` and leaving `ShowIcon` at the default, which gave it a cramped tool-window caption bar visibly different from the other two dialogs. Switched to `FixedDialog` + `ShowIcon=false` to match.
+- **Scales correctly at 125/150/200% DPI.** The Update dialog inherited the WinForms default `AutoScaleMode.Font`; its absolute-pixel controls skewed visibly on HiDPI displays. Now `AutoScaleMode.Dpi`, matching SettingsForm and HelpForm.
+- **Esc closes the dialog.** `_btnCancel` had its own `Click` handler but `CancelButton = _btnCancel` was never set on the form — so pressing Esc did nothing. Wired now.
+- **Buttons are the same width and right-align symmetrically.** The two-button row was `Upgrade Now` (110 px) + `Cancel` (80 px) with a 45 px right margin — next to Settings' and Help's symmetric 16 px margins this read as "a bit off". Now both buttons are 110 px, ending at x=406 on a 420 px form.
+
 ## v2.2.29 — 2026-04-18
 
 ### Accessibility
