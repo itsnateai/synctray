@@ -4,6 +4,11 @@
 
 All notable changes to SyncthingTray are documented here.
 
+## v2.2.25 — 2026-04-17
+
+### Reliability
+- **Tray no longer crashes on boot from a hand-edited INI.** `AppConfig.Load` used `int.TryParse` with no bounds on `StartupDelay`, then the constructor did `new Timer { Interval = _config.StartupDelay * 1000 }`. A value like `180000` (user typo, or muscle memory from milliseconds) overflows after `× 1000` to a negative `int`, and WinForms `Timer.Interval` throws `ArgumentOutOfRangeException` on anything `≤ 0` — silent first-line boot crash, no OSD, no log, no sign of what happened. The load path now clamps to `[0, 3600]`, matching the Settings-dialog NumericUpDown invariant.
+
 ## v2.2.24 — 2026-04-17
 
 ### Reliability

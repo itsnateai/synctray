@@ -154,8 +154,15 @@ internal sealed class AppConfig
         if (!string.IsNullOrEmpty(webUi))
             WebUI = ValidateWebUI(webUi);
 
+        // Clamp to [0, 3600] at the load boundary. The Settings UI NumericUpDown
+        // already clamps on input, but a user hand-editing SyncthingTray.ini
+        // (typo, muscle memory from StartupDelay=180000 meaning-ms) could land a
+        // value that overflows when the constructor multiplies by 1000 → WinForms
+        // Timer.Interval setter throws on <=0, crashing the tray on boot with no
+        // OSD, no log, no sign of what happened. 3600 s = 1 hour upper bound
+        // matches the UI maximum so load and save agree on the same invariant.
         if (int.TryParse(GetString(settings, "StartupDelay", "0"), out int delay))
-            StartupDelay = delay;
+            StartupDelay = Math.Clamp(delay, 0, 3600);
     }
 
     /// <summary>
