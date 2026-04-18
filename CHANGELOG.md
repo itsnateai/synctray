@@ -4,6 +4,11 @@
 
 All notable changes to SyncthingTray are documented here.
 
+## v2.2.28 — 2026-04-18
+
+### Start-up
+- **Browser-on-launch honors late toggles.** The one-shot "Start browser when Syncthing launches" latch was set at tray-startup if the setting was on, then fired as soon as the first poll confirmed Syncthing was reachable. But a user who opened Settings and turned the setting off during Syncthing's cold-start window (before it was reachable) would still get the browser popped at them when Syncthing finally came up. The latch now re-reads `StartBrowser` at fire time, so if it's off by then nothing opens.
+
 ## v2.2.27 — 2026-04-18
 
 ### Reliability

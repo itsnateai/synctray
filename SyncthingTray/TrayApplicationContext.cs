@@ -788,10 +788,14 @@ internal sealed class TrayApplicationContext : ApplicationContext
         // One-shot: once Syncthing is running + reachable, honor the "Start browser
         // when Syncthing launches" setting regardless of whether we cold-launched
         // Syncthing or joined an existing process. Fires at most once per tray session.
+        // Re-check _config.StartBrowser at fire time so a user who toggled the setting
+        // off in Settings during the cold-start window (before Syncthing became
+        // reachable) doesn't get a browser popped at them anyway.
         if (_pendingOpenWebUI && _api.IsReachable())
         {
             _pendingOpenWebUI = false;
-            RunOnUi(OpenWebUI);
+            if (_config.StartBrowser)
+                RunOnUi(OpenWebUI);
         }
 
         // 1. Sync completion
