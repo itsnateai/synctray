@@ -78,6 +78,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private bool _pendingOpenWebUI;
 
     private readonly System.Windows.Forms.Timer _pauseTimer;
+    // Tracks one-shot Timers (startup, first-run, stability) so Dispose can stop +
+    // release them if the tray exits before their Tick fires — otherwise fast-exit
+    // (<30 s) leaves the WinForms timer queue holding native handles that don't
+    // drop until the finalizer runs.
+    private readonly List<System.Windows.Forms.Timer> _oneShotTimers = new();
     private string _pauseStatePath = string.Empty;
     private int _connectedCount;
     private int _totalDevices;
@@ -196,9 +201,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
             startupTimer.Tick += (_, _) =>
             {
                 startupTimer.Stop();
+                _oneShotTimers.Remove(startupTimer);
                 startupTimer.Dispose();
                 StartAfterDelay();
             };
+            _oneShotTimers.Add(startupTimer);
             startupTimer.Start();
         }
         else
@@ -215,10 +222,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
             firstRunTimer.Tick += (_, _) =>
             {
                 firstRunTimer.Stop();
+                _oneShotTimers.Remove(firstRunTimer);
                 firstRunTimer.Dispose();
                 if (_disposed) return;
                 OpenSettings();
             };
+            _oneShotTimers.Add(firstRunTimer);
             firstRunTimer.Start();
         }
 
@@ -258,12 +267,14 @@ internal sealed class TrayApplicationContext : ApplicationContext
         stabilityTimer.Tick += (_, _) =>
         {
             stabilityTimer.Stop();
+            _oneShotTimers.Remove(stabilityTimer);
             stabilityTimer.Dispose();
             if (_disposed) return;
             UpdateDialog.TryDeleteCrashSentinel();
             UpdateDialog.CleanupStaleUpdateArtifacts();
             TrayLog.Info("30s stability reached; crash sentinel + .old/.new cleaned.");
         };
+        _oneShotTimers.Add(stabilityTimer);
         stabilityTimer.Start();
 
         // Sleep/wake: on Resume, the Syncthing process state and the network
@@ -1862,14 +1873,18 @@ internal sealed class TrayApplicationContext : ApplicationContext
             // Limit Syncthing's Go runtime to 2 OS threads — reduces memory/CPU
             // footprint on a machine already running Claude, Docker, Semgrep, etc.
             psi.Environment["GOMAXPROCS"] = "2";
-            var p = Process.Start(psi);
+            // `using` so a throw on .Id (process exited between Start and the Id
+            // read — rare, but observed on slow-disk + corrupt-exe combinations)
+            // still releases the Process handle; otherwise it leaked until the
+            // finalizer ran. Process.Id is only valid until Dispose, so capture
+            // the int inside the using scope before releasing.
+            using var p = Process.Start(psi);
             if (p is null)
             {
                 ShowOsd("Failed to start syncthing process", 5000);
                 return false;
             }
             _launchedPid = p.Id;
-            p.Dispose();
             InvalidateRunningCache();
             return true;
         }
@@ -2131,6 +2146,17 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 _pollTimer.Dispose();
                 _pauseTimer.Stop();
                 _pauseTimer.Dispose();
+
+                // One-shot timers (startup/first-run/stability) that haven't
+                // ticked yet — stop + dispose so their native timer handles drop
+                // now rather than on the finalizer thread. The Tick handlers
+                // themselves Remove from this list on fire, so by exit this is
+                // only non-empty when we exited before the timer elapsed.
+                foreach (var t in _oneShotTimers)
+                {
+                    try { t.Stop(); t.Dispose(); } catch { /* already disposed */ }
+                }
+                _oneShotTimers.Clear();
 
                 _trayIcon.Visible = false;
                 _trayIcon.ContextMenuStrip?.Dispose();

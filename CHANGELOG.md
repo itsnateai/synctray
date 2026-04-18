@@ -4,6 +4,12 @@
 
 All notable changes to SyncthingTray are documented here.
 
+## v2.2.27 — 2026-04-18
+
+### Reliability
+- **Native handles drop on fast-exit.** Three one-shot WinForms Timers (startup-delay, first-run-settings-open, 30-second-stability-proof) were created as local `var`s that only self-disposed inside their own Tick handlers. If the tray exited before the Tick fired (fast shutdown under 30 seconds — restart loop, Windows logoff, killed from Task Manager), the timers leaked their native timer handles until the finalizer thread eventually ran. They're now tracked in a `_oneShotTimers` field; Tick removes each one on fire, and `Dispose(bool)` stops + disposes whatever's left.
+- **Syncthing launch no longer leaks a Process handle on a rare race.** `_launchedPid = p.Id` followed by a separate `p.Dispose()` left the handle leaked if `.Id` threw (process exited between `Process.Start` and the Id read — observed on slow disks with a corrupt `syncthing.exe`). The `Process` now lives in a `using` so disposal runs regardless; the PID is still captured to the int field before the scope ends.
+
 ## v2.2.26 — 2026-04-18
 
 ### Reliability
