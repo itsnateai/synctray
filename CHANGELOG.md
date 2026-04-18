@@ -4,6 +4,11 @@
 
 All notable changes to SyncthingTray are documented here.
 
+## v2.2.26 — 2026-04-18
+
+### Reliability
+- **Inherited pause now survives a stale post-reapply snapshot.** When the tray restarts with a pause from the previous session, it re-POSTs `/rest/system/pause` to Syncthing on the first successful poll. The old shape of that code cleared the `_pauseNeedsReapply` flag as soon as the POST returned 200 — but the *next* poll could still see `allPaused == false` if its snapshot was fetched before Syncthing finished applying the pause, or if Syncthing silently rejected the request, or if an admin resumed concurrently. When that happened, the external-resume branch silently dropped the inherited pause the user hadn't touched. The flag now stays set until a subsequent poll actually observes `allPaused == true`; any unconfirmed tick just re-POSTs (idempotent server-side). Also marked the flag `volatile` — it's written from both the UI thread (Restore/MenuPause/ClearPauseState) and the poll thread (ReapplyInheritedPause) — matching the pattern already used on `_foldersLoadedSuccessfully` for cross-thread publication ordering.
+
 ## v2.2.25 — 2026-04-17
 
 ### Reliability

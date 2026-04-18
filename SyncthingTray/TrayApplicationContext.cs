@@ -58,10 +58,16 @@ internal sealed class TrayApplicationContext : ApplicationContext
     // Set during RestorePauseStateOnStartup when we inherit an active pause from
     // a prior session. Syncthing's /rest/system/pause is runtime-only state, so
     // after its process restart the daemon has forgotten it was paused. The next
-    // poll-tick re-POSTs pause to reconcile Syncthing with our sidecar, then
-    // clears this flag — after which the normal external-resume detection takes
-    // over and any user-initiated resume via Web UI propagates correctly.
-    private bool _pauseNeedsReapply;
+    // poll-tick re-POSTs pause to reconcile Syncthing with our sidecar. The flag
+    // is NOT cleared on the POST's 200 response — we wait for a subsequent poll
+    // that actually observes `allPaused == true` in /rest/system/connections
+    // before dropping the flag. Otherwise a stale pre-reapply snapshot could
+    // trip the external-resume branch and silently drop the inherited pause.
+    //
+    // Volatile: written from both UI thread (MenuPause/ClearPauseState/Restore)
+    // and the poll thread (ReapplyInheritedPause). `_foldersLoadedSuccessfully`
+    // already uses this same pattern for publication ordering across threads.
+    private volatile bool _pauseNeedsReapply;
 
     // One-shot latch for the "Start browser when Syncthing launches" setting.
     // Set in StartAfterDelay if the checkbox is on; cleared as soon as the first
@@ -895,16 +901,29 @@ internal sealed class TrayApplicationContext : ApplicationContext
                     if (deviceCount > 0)
                     {
                         // First poll after inheriting pause from pause.dat: re-apply
-                        // to Syncthing before reconciling local state. If the reapply
-                        // succeeds, Syncthing will report paused=true on this very
-                        // poll result — but since `allPaused` was already computed from
-                        // the stale pre-reapply /rest response, we branch on the
-                        // reapply flag instead of the current `allPaused` value.
-                        if (_pauseNeedsReapply && !allPaused)
+                        // to Syncthing before reconciling local state. Confirm-handshake:
+                        // stay in this branch until Syncthing actually reports
+                        // `allPaused == true`. The prior shape of this code cleared
+                        // the reapply flag on the POST's 200 response, but the next
+                        // poll could still see `allPaused == false` (stale snapshot
+                        // that was fetched before the POST took effect, admin-resumed
+                        // concurrently, or silent rejection) — hitting the else branch
+                        // and silently dropping the inherited pause.
+                        if (_pauseNeedsReapply)
                         {
-                            ReapplyInheritedPause();
-                            // Keep _paused = true; the next poll will confirm Syncthing
-                            // matches. Skip the external-resume branch for this tick.
+                            if (allPaused)
+                            {
+                                // Syncthing has confirmed the reapply; safe to drop the flag.
+                                _pauseNeedsReapply = false;
+                                TrayLog.Info("Inherited pause confirmed by Syncthing; reapply flag cleared.");
+                            }
+                            else
+                            {
+                                // Re-POST and stay in this branch. ReapplyInheritedPause is
+                                // idempotent server-side; fire again on every unconfirmed tick.
+                                ReapplyInheritedPause();
+                            }
+                            // Either way, skip the external-resume branch this tick.
                         }
                         else
                         {
@@ -1689,9 +1708,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     /// <summary>
     /// Called from the poll-tick once Syncthing is confirmed reachable. Re-POSTs
-    /// /rest/system/pause to reconcile Syncthing's runtime state with our sidecar,
-    /// then drops the reapply flag so the normal external-resume detection resumes
-    /// its regularly scheduled programming.
+    /// /rest/system/pause to reconcile Syncthing's runtime state with our sidecar.
+    /// The flag is NOT cleared here on HTTP 200 — the caller does that when the
+    /// NEXT poll confirms `allPaused == true`. Firing multiple times while waiting
+    /// for confirmation is safe (pause is idempotent server-side).
     /// </summary>
     private void ReapplyInheritedPause()
     {
@@ -1706,14 +1726,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             var (status, _) = _api.Post("/rest/system/pause");
             if (status == 200)
-            {
-                _pauseNeedsReapply = false;
-                TrayLog.Info("ReapplyInheritedPause: Syncthing re-paused from prior session.");
-            }
+                TrayLog.Info("ReapplyInheritedPause: POST 200 — awaiting next-poll confirmation.");
             else
-            {
                 TrayLog.Warn($"ReapplyInheritedPause: HTTP {status} — will retry next poll.");
-            }
         }
         catch (Exception ex)
         {
