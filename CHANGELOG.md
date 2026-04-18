@@ -4,6 +4,11 @@
 
 All notable changes to SyncthingTray are documented here.
 
+## v2.2.23 — 2026-04-17
+
+### Reliability
+- **Pause state machine is now thread-safe.** Three background-thread code paths were mutating UI-affine state directly on the thread pool: the auto-pause block (when the machine joins a public wifi), the auto-resume block (when returning to a private wifi), and the external-resume detector (when someone hits Resume in the Syncthing Web UI while the tray thinks sync is paused). Each called `_pauseTimer.Stop()` + `BuildMenu()` + `UpdateTrayIcon()` directly. WinForms `Timer.Stop()` off the UI thread is undefined — 99 runs of 100 the call silently succeeded; the 100th would throw or corrupt the timer queue, leaving a dangling auto-resume that never fires. Plus the `OnPowerModeChanged` wake handler read `_paused` and `_pauseResumeAtUtc` on the SystemEvents background thread before marshaling, racing with user-initiated MenuResume/ClearPauseState. All four sites now wrap the read/state/timer/menu writes in `RunOnUi(() => …)` so every pause-state mutation happens on the UI thread atomically.
+
 ## v2.2.22 — 2026-04-17
 
 ### Settings

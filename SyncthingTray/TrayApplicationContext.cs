@@ -273,21 +273,24 @@ internal sealed class TrayApplicationContext : ApplicationContext
         TrayLog.Info("PowerMode: Resume — invalidating caches + polling.");
         InvalidateRunningCache();
 
-        // A 30-min pause through a 2-hr sleep must resume at wake, not 30 min
-        // after wake. The poll-tick picks up Syncthing's state eventually, but
-        // firing an explicit deadline check here avoids a 10s-window stale menu.
-        if (_paused && _pauseResumeAtUtc is DateTime due)
-        {
-            if (DateTime.UtcNow >= due)
-                RunOnUi(() => { if (!_disposed) MenuResume(); });
-            else
-                RunOnUi(() => { if (!_disposed) StartOrRearmPauseTimer(); });
-        }
-        // Marshal to UI thread — SystemEvents.PowerModeChanged fires on a
-        // background thread that the CLR pools for SystemEvents callbacks.
+        // SystemEvents.PowerModeChanged fires on a CLR-pooled background thread.
+        // Marshal everything to UI — the pause-state reads below MUST NOT race
+        // with UI-thread MenuResume/ClearPauseState mutations.
         RunOnUi(() =>
         {
             if (_disposed) return;
+
+            // A 30-min pause through a 2-hr sleep must resume at wake, not 30 min
+            // after wake. The poll-tick picks up Syncthing's state eventually, but
+            // firing an explicit deadline check here avoids a 10s-window stale menu.
+            if (_paused && _pauseResumeAtUtc is DateTime due)
+            {
+                if (DateTime.UtcNow >= due)
+                    MenuResume();
+                else
+                    StartOrRearmPauseTimer();
+            }
+
             _pollTimer.Stop();
             _ = System.Threading.Tasks.Task.Run(() =>
             {
@@ -891,7 +894,6 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
                     if (deviceCount > 0)
                     {
-                        bool wasPaused = _paused;
                         // First poll after inheriting pause from pause.dat: re-apply
                         // to Syncthing before reconciling local state. If the reapply
                         // succeeds, Syncthing will report paused=true on this very
@@ -906,12 +908,22 @@ internal sealed class TrayApplicationContext : ApplicationContext
                         }
                         else
                         {
-                            _paused = allPaused;
-                            // External resume (user hit Resume in Web UI, or our deadline
-                            // already fired and Syncthing reflects it): drop our timer +
-                            // sidecar so a stale deadline doesn't double-fire MenuResume().
-                            if (wasPaused && !_paused)
-                                ClearPauseState();
+                            // _paused read-modify-write + ClearPauseState (which touches
+                            // _pauseTimer, a WinForms UI-affine timer) must happen on
+                            // the UI thread — this branch runs from PollSyncStatusCore
+                            // via `await Task.Run(...)` which drops the sync context.
+                            bool pausedNow = allPaused;
+                            RunOnUi(() =>
+                            {
+                                if (_disposed) return;
+                                bool wasPaused = _paused;
+                                _paused = pausedNow;
+                                // External resume (user hit Resume in Web UI, or our deadline
+                                // already fired and Syncthing reflects it): drop our timer +
+                                // sidecar so a stale deadline doesn't double-fire MenuResume().
+                                if (wasPaused && !_paused)
+                                    ClearPauseState();
+                            });
                         }
                     }
 
@@ -1005,23 +1017,32 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 }
                 else if (cat != _lastNetworkCategory && _lastNetworkCategory != -1)
                 {
+                    // Auto-pause / auto-resume: HTTP on this (pool) thread, then
+                    // marshal the UI-affine state mutations (_pauseTimer.Stop,
+                    // UpdateTrayIcon, BuildMenu) onto the UI thread as a single atom.
+                    // WinForms Timer.Stop() off-UI is undefined behavior — historically
+                    // this block's 99/100 silent success is exactly the symptom.
                     if (cat == 0 && !_paused)
                     {
                         var (status, _) = _api.Post("/rest/system/pause");
                         if (status == 200)
                         {
-                            _paused = true;
-                            _autoPaused = true;
-                            // Auto-pause has no deadline — it resumes on the next network
-                            // category transition, not on a clock. Unify the state so the
-                            // menu renders "Resume Syncing" (no countdown).
-                            _activePauseMinutes = 0;
-                            _pauseResumeAtUtc = null;
-                            _pauseTimer.Stop();
-                            PersistPauseState();
-                            UpdateTrayIcon();
-                            BuildMenu();
-                            ShowOsd("Auto-paused: public network detected", 3000);
+                            RunOnUi(() =>
+                            {
+                                if (_disposed) return;
+                                _paused = true;
+                                _autoPaused = true;
+                                // Auto-pause has no deadline — it resumes on the next network
+                                // category transition, not on a clock. Unify the state so the
+                                // menu renders "Resume Syncing" (no countdown).
+                                _activePauseMinutes = 0;
+                                _pauseResumeAtUtc = null;
+                                _pauseTimer.Stop();
+                                PersistPauseState();
+                                UpdateTrayIcon();
+                                BuildMenu();
+                                ShowOsd("Auto-paused: public network detected", 3000);
+                            });
                         }
                         else
                         {
@@ -1034,10 +1055,14 @@ internal sealed class TrayApplicationContext : ApplicationContext
                         var (status, _) = _api.Post("/rest/system/resume");
                         if (status == 200)
                         {
-                            ClearPauseState();
-                            UpdateTrayIcon();
-                            BuildMenu();
-                            ShowOsd("Auto-resumed: private network detected", 3000);
+                            RunOnUi(() =>
+                            {
+                                if (_disposed) return;
+                                ClearPauseState();
+                                UpdateTrayIcon();
+                                BuildMenu();
+                                ShowOsd("Auto-resumed: private network detected", 3000);
+                            });
                         }
                         else
                         {
