@@ -51,8 +51,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private DateTime? _pauseResumeAtUtc;
 
     // Original duration of the active pause: 0 = untimed, 5 or 30 = minutes.
-    // Only meaningful when _paused is true. Used to set Checked marks on the
-    // pause-duration submenu items.
+    // Only meaningful when _paused is true. Used for pause.dat round-trip, OSD
+    // text on pause/resume events, and the "Resuming in <N min>" tooltip during
+    // a timed pause. (An earlier revision of the pause submenu used this to set
+    // .Checked marks; the current menu rebuilds from scratch on every state
+    // change so no checkmarks are wired today.)
     private int _activePauseMinutes;
 
     // Set during RestorePauseStateOnStartup when we inherit an active pause from

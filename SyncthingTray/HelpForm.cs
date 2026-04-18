@@ -33,7 +33,7 @@ Sync icon = running. Pause icon = paused or stopped.
 
 Open Web UI — opens the Syncthing dashboard.
 
-Synced Folders — every folder Syncthing is configured for. Each has Open Folder + Rescan. Labels sharing a prefix (""s24_*"", ""tablet_*"") cluster under a device header.
+Synced Folders — every folder Syncthing is configured for. Each has Open Folder + Rescan. Folders group under the remote devices they're shared with (read from Syncthing's own config); a folder shared with two devices appears under both. Folders you haven't shared yet fall under ""Local only"".
 
 Force Rescan Now — rescans every folder.
 

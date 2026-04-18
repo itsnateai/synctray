@@ -4,6 +4,12 @@
 
 All notable changes to SyncthingTray are documented here.
 
+## v2.2.31 — 2026-04-18
+
+### Docs
+- **Help window describes how folders actually group.** The in-app Help text was still describing the pre-v2.2.16 prefix-heuristic — "labels sharing a prefix cluster under a device header" with `s24_*` / `tablet_*` examples — but v2.2.16 replaced that with structured grouping from Syncthing's own folder-to-device config. Text now reflects reality: folders group under the remote devices they're shared with; unshared folders fall under "Local only".
+- **Stale comment on `_activePauseMinutes` corrected.** Field doc claimed it was used to set `.Checked` marks on pause-duration submenu items, but the menu rebuilds from scratch on every state change and no such marks are wired. Comment now describes actual uses: pause.dat round-trip, OSD text, and the "Resuming in N min" tooltip.
+
 ## v2.2.30 — 2026-04-18
 
 ### Update dialog polish
