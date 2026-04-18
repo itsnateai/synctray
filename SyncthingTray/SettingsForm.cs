@@ -113,11 +113,13 @@ internal sealed class SettingsForm : Form
         // padding fits comfortably in 160px. Matches professional-settings-dialog
         // convention of proportional-to-content sizing rather than row-filling.
         AddLabel("Double-click:", 16, y + 2, 0, _normalFont, DimColor);
-        _cboDblClick = AddComboBox(112, y, 160, AppConfig.ClickActions, AppConfig.ActionValueToIndex(_config.DblClickAction));
+        _cboDblClick = AddComboBox(112, y, 160, AppConfig.ClickActions, AppConfig.ActionValueToIndex(_config.DblClickAction),
+            accessibleName: "Double-click action");
         y += 30;
 
         AddLabel("Middle-click:", 16, y + 2, 0, _normalFont, DimColor);
-        _cboMiddleClick = AddComboBox(112, y, 160, AppConfig.ClickActions, AppConfig.ActionValueToIndex(_config.MiddleClickAction));
+        _cboMiddleClick = AddComboBox(112, y, 160, AppConfig.ClickActions, AppConfig.ActionValueToIndex(_config.MiddleClickAction),
+            accessibleName: "Middle-click action");
         y += 30;
     }
 
@@ -165,6 +167,7 @@ internal sealed class SettingsForm : Form
             BackColor = EditBgColor,
             BorderStyle = BorderStyle.FixedSingle,
             TextAlign = HorizontalAlignment.Left,
+            AccessibleName = "Windows startup delay in seconds",
         };
         Controls.Add(_nudDelay);
         AddLabel("seconds", 228, y, 0, _normalFont, DimColor);
@@ -176,7 +179,7 @@ internal sealed class SettingsForm : Form
         AddSectionHeader("Paths", 16, ref y, sw);
 
         AddLabel("Syncthing:", 16, y, 0, _normalFont, DimColor);
-        _edSyncExe = AddTextBox(90, y - 2, 220, _config.SyncExe, true);
+        _edSyncExe = AddTextBox(90, y - 2, 220, _config.SyncExe, true, accessibleName: "Syncthing executable path");
         var btnBrowse = new Button
         {
             Text = "...",
@@ -186,13 +189,14 @@ internal sealed class SettingsForm : Form
             FlatStyle = FlatStyle.Flat,
             ForeColor = FgColor,
             BackColor = BgColor,
+            AccessibleName = "Browse for syncthing.exe",
         };
         btnBrowse.Click += OnBrowseSyncExe;
         Controls.Add(btnBrowse);
         y += 28;
 
         AddLabel("Web UI:", 16, y, 0, _normalFont, DimColor);
-        _edWebUI = AddTextBox(90, y - 2, 220, _config.WebUI, true);
+        _edWebUI = AddTextBox(90, y - 2, 220, _config.WebUI, true, accessibleName: "Syncthing Web UI URL");
         var btnOpenWebUI = new Button
         {
             Text = "Open",
@@ -202,6 +206,7 @@ internal sealed class SettingsForm : Form
             FlatStyle = FlatStyle.Flat,
             ForeColor = FgColor,
             BackColor = BgColor,
+            AccessibleName = "Open Web UI in browser",
         };
         btnOpenWebUI.Click += (_, _) =>
         {
@@ -232,7 +237,7 @@ internal sealed class SettingsForm : Form
         AddLabel("API Key:", 16, y, 0, _normalFont, DimColor);
         // Textbox is narrower than the old 272px to make room for the reveal toggle.
         // A Syncthing API key is ~40 chars; 216px @ Consolas-8 fits the key comfortably.
-        _edApiKey = AddTextBox(90, y - 2, 216, _config.ApiKey, true);
+        _edApiKey = AddTextBox(90, y - 2, 216, _config.ApiKey, true, accessibleName: "Syncthing API key");
         _edApiKey.UseSystemPasswordChar = true;
 
         var btnReveal = new Button
@@ -246,7 +251,12 @@ internal sealed class SettingsForm : Form
             FlatStyle = FlatStyle.Flat,
             ForeColor = FgColor,
             BackColor = EditBgColor,
-            TabStop = false,
+            // TabStop = true + explicit AccessibleName so keyboard-only and
+            // screen-reader users can discover the reveal affordance. The glyph
+            // itself is unreadable to assistive tech — Segoe MDL2 "\uE7B3" has
+            // no semantic text.
+            TabStop = true,
+            AccessibleName = "Show or hide API key",
         };
         btnReveal.FlatAppearance.BorderColor = DividerColor;
         btnReveal.Click += (_, _) =>
@@ -819,12 +829,16 @@ internal sealed class SettingsForm : Form
             Location = new Point(x, y),
             Width = 320,
             Checked = isChecked,
+            // WinForms CheckBox already exposes Text as AccessibleName by default
+            // for screen readers, but setting it explicitly keeps the contract
+            // uniform across every control in this form.
+            AccessibleName = text,
         };
         Controls.Add(cb);
         return cb;
     }
 
-    private TextBox AddTextBox(int x, int y, int w, string text, bool useMono = false)
+    private TextBox AddTextBox(int x, int y, int w, string text, bool useMono = false, string? accessibleName = null)
     {
         var tb = new TextBox
         {
@@ -837,11 +851,12 @@ internal sealed class SettingsForm : Form
             Height = 22,
             BorderStyle = BorderStyle.FixedSingle,
         };
+        if (accessibleName is not null) tb.AccessibleName = accessibleName;
         Controls.Add(tb);
         return tb;
     }
 
-    private ComboBox AddComboBox(int x, int y, int w, string[] items, int selectedIndex)
+    private ComboBox AddComboBox(int x, int y, int w, string[] items, int selectedIndex, string? accessibleName = null)
     {
         var cb = new ComboBox
         {
@@ -855,6 +870,7 @@ internal sealed class SettingsForm : Form
             DrawMode = DrawMode.OwnerDrawFixed,
             ItemHeight = 20,
         };
+        if (accessibleName is not null) cb.AccessibleName = accessibleName;
         cb.DrawItem += OnDrawComboItem;
         cb.Items.AddRange(items);
         cb.SelectedIndex = selectedIndex;

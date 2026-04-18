@@ -4,6 +4,11 @@
 
 All notable changes to SyncthingTray are documented here.
 
+## v2.2.29 — 2026-04-18
+
+### Accessibility
+- **Screen readers and keyboard-only users can use Settings properly.** Every focusable control in the Settings dialog — the two click-action combo boxes, the API key field, Syncthing path, Web UI URL, startup-delay spinner, the "..." browse button, the Web UI Open button, and the API-key reveal eye-toggle — now has an explicit `AccessibleName`. WinForms doesn't auto-associate Labels with adjacent controls the way HTML `<label for>` does, so screen readers were reading "edit", "combo box", "spin button", "button" with no context. The eye-toggle also picks up `TabStop = true` — its Segoe MDL2 glyph has no readable text, so keyboard users previously couldn't discover the reveal affordance at all.
+
 ## v2.2.28 — 2026-04-18
 
 ### Start-up
