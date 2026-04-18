@@ -1092,23 +1092,29 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     // --- Update Check ---
 
+    /// <summary>
+    /// Called from both the poll-tick (pool thread) and MenuCheckUpdate (now also
+    /// pool thread via Task.Run). HTTP runs here; _updateAvailable/_updateRunning
+    /// writes + the BuildMenu marshal back to UI.
+    /// </summary>
     private void CheckForUpdate()
     {
         _lastUpdateCheck = Environment.TickCount64;
         try
         {
             var (status, body) = _api.Get("/rest/system/upgrade");
-            if (status == 200)
+            if (status != 200) return;
+
+            using var doc = JsonDocument.Parse(body);
+            var root = doc.RootElement;
+            bool newer = root.TryGetProperty("newer", out var nEl) && nEl.GetBoolean();
+            string latest = root.TryGetProperty("latest", out var lEl) ? lEl.GetString() ?? string.Empty : string.Empty;
+            string running = root.TryGetProperty("running", out var rEl) ? rEl.GetString() ?? string.Empty : string.Empty;
+
+            RunOnUi(() =>
             {
-                using var doc = JsonDocument.Parse(body);
-                var root = doc.RootElement;
-
-                bool newer = root.TryGetProperty("newer", out var nEl) && nEl.GetBoolean();
-                string latest = root.TryGetProperty("latest", out var lEl) ? lEl.GetString() ?? string.Empty : string.Empty;
-                string running = root.TryGetProperty("running", out var rEl) ? rEl.GetString() ?? string.Empty : string.Empty;
-
+                if (_disposed) return;
                 _updateRunning = running;
-
                 if (newer && latest.Length > 0)
                 {
                     _updateAvailable = latest;
@@ -1120,7 +1126,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
                     _updateAvailable = string.Empty;
                     BuildMenu();
                 }
-            }
+            });
         }
         catch { /* best-effort */ }
     }
@@ -1140,37 +1146,56 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
 
         ShowOsd("Checking for updates...", 2000);
-        CheckForUpdate();
-        if (_updateAvailable.Length == 0)
+        // CheckForUpdate fires its own HTTP; hop to pool so the click doesn't
+        // freeze the menu. Follow-up OSD reads _updateAvailable on UI thread.
+        _ = Task.Run(() =>
         {
-            var msg = "Syncthing is up to date";
-            if (_updateRunning.Length > 0)
-                msg += $" ({_updateRunning})";
-            ShowOsd(msg, 3000);
-        }
+            CheckForUpdate();
+            RunOnUi(() =>
+            {
+                if (_disposed) return;
+                if (_updateAvailable.Length == 0)
+                {
+                    var msg = "Syncthing is up to date";
+                    if (_updateRunning.Length > 0)
+                        msg += $" ({_updateRunning})";
+                    ShowOsd(msg, 3000);
+                }
+            });
+        });
     }
 
     private void DoUpdate()
     {
         if (_updateAvailable.Length == 0) return;
-        try
+        _ = Task.Run(() =>
         {
-            var (status, _) = _api.Post("/rest/system/upgrade");
+            int status;
+            try
+            {
+                status = _api.Post("/rest/system/upgrade").StatusCode;
+            }
+            catch (Exception ex)
+            {
+                TrayLog.Warn("DoUpdate POST threw: " + ex.Message);
+                ShowOsd("Upgrade request failed", 5000);
+                return;
+            }
             if (status == 200)
             {
-                ShowOsd($"Syncthing upgrading to {_updateAvailable}...", 5000);
-                _updateAvailable = string.Empty;
-                BuildMenu();
+                RunOnUi(() =>
+                {
+                    if (_disposed) return;
+                    ShowOsd($"Syncthing upgrading to {_updateAvailable}...", 5000);
+                    _updateAvailable = string.Empty;
+                    BuildMenu();
+                });
             }
             else
             {
                 ShowOsd($"Upgrade failed (HTTP {status})", 5000);
             }
-        }
-        catch
-        {
-            ShowOsd("Upgrade request failed", 5000);
-        }
+        });
     }
 
     // --- Folder Loading ---
@@ -1389,8 +1414,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     /// <summary>
     /// Enter (or re-arm) a pause. minutes = 0 means "Until resumed" (no deadline).
-    /// Re-arming while already paused just updates the timer to the new duration
-    /// without re-posting to Syncthing.
+    /// Click-handler entry point — runs HTTP on a pool thread so a 5-second HttpClient
+    /// timeout on a dead Syncthing can't freeze the tray menu. State mutations + UI
+    /// updates marshal back via RunOnUi.
     /// </summary>
     private void MenuPause(int minutes)
     {
@@ -1399,44 +1425,52 @@ internal sealed class TrayApplicationContext : ApplicationContext
             ShowOsd("API Key required for pause \u2014 set in Settings", 3000);
             return;
         }
-        try
+        _ = Task.Run(() =>
         {
-            // Skip the HTTP call if Syncthing is already paused — avoids a redundant
-            // request when switching 5min → 30min on an active pause.
-            if (!_paused)
+            int status;
+            try
             {
-                var (status, _) = _api.Post("/rest/system/pause");
-                if (status != 200)
+                status = _api.Post("/rest/system/pause").StatusCode;
+            }
+            catch (Exception ex)
+            {
+                TrayLog.Warn("MenuPause POST threw: " + ex.Message);
+                ShowOsd("Failed to pause syncing", 3000);
+                return;
+            }
+            if (status != 200)
+            {
+                ShowOsd($"Pause failed (HTTP {status})", 3000);
+                return;
+            }
+            RunOnUi(() =>
+            {
+                if (_disposed) return;
+                _paused = true;
+                _activePauseMinutes = minutes;
+                _pauseTimer.Stop();
+                if (minutes > 0)
                 {
-                    ShowOsd($"Pause failed (HTTP {status})", 3000);
-                    return;
+                    _pauseResumeAtUtc = DateTime.UtcNow.AddMinutes(minutes);
+                    StartOrRearmPauseTimer();
                 }
-            }
-
-            _paused = true;
-            _activePauseMinutes = minutes;
-            _pauseTimer.Stop();
-            if (minutes > 0)
-            {
-                _pauseResumeAtUtc = DateTime.UtcNow.AddMinutes(minutes);
-                StartOrRearmPauseTimer();
-            }
-            else
-            {
-                _pauseResumeAtUtc = null;
-            }
-            PersistPauseState();
-
-            UpdateTrayIcon();
-            BuildMenu();
-            ShowOsd($"Syncing paused ({FormatPauseDuration(minutes)})", 3000);
-        }
-        catch
-        {
-            ShowOsd("Failed to pause syncing", 3000);
-        }
+                else
+                {
+                    _pauseResumeAtUtc = null;
+                }
+                PersistPauseState();
+                UpdateTrayIcon();
+                BuildMenu();
+                ShowOsd($"Syncing paused ({FormatPauseDuration(minutes)})", 3000);
+            });
+        });
     }
 
+    /// <summary>
+    /// Resume syncing. Click-handler entry point — HTTP on pool thread, state + UI
+    /// on UI thread. Also called from OnPauseTimerTick and OnPowerModeChanged (both
+    /// UI-thread callers — the Task.Run hop there is redundant but safe).
+    /// </summary>
     private void MenuResume()
     {
         if (string.IsNullOrEmpty(_config.ApiKey))
@@ -1444,23 +1478,33 @@ internal sealed class TrayApplicationContext : ApplicationContext
             ShowOsd("API Key required for resume \u2014 set in Settings", 3000);
             return;
         }
-        try
+        _ = Task.Run(() =>
         {
-            var (status, _) = _api.Post("/rest/system/resume");
+            int status;
+            try
+            {
+                status = _api.Post("/rest/system/resume").StatusCode;
+            }
+            catch (Exception ex)
+            {
+                TrayLog.Warn("MenuResume POST threw: " + ex.Message);
+                ShowOsd("Failed to resume syncing", 3000);
+                return;
+            }
             if (status != 200)
             {
                 ShowOsd($"Resume failed (HTTP {status})", 3000);
                 return;
             }
-            ClearPauseState();
-            UpdateTrayIcon();
-            BuildMenu();
-            ShowOsd("Syncing resumed", 3000);
-        }
-        catch
-        {
-            ShowOsd("Failed to resume syncing", 3000);
-        }
+            RunOnUi(() =>
+            {
+                if (_disposed) return;
+                ClearPauseState();
+                UpdateTrayIcon();
+                BuildMenu();
+                ShowOsd("Syncing resumed", 3000);
+            });
+        });
     }
 
     /// <summary>
@@ -1720,18 +1764,21 @@ internal sealed class TrayApplicationContext : ApplicationContext
             ShowOsd("API Key required — set in Settings", 3000);
             return;
         }
-        try
+        // HTTP on pool thread — a dead Syncthing would otherwise freeze the tray
+        // menu for HttpClient.Timeout (5 s). OSD self-marshals to UI.
+        _ = Task.Run(() =>
         {
-            var (status, _) = _api.Post("/rest/db/scan");
-            if (status == 200)
-                ShowOsd("Rescanning all folders...", 3000);
-            else
-                ShowOsd($"Rescan failed (HTTP {status})", 3000);
-        }
-        catch
-        {
-            ShowOsd("Rescan request failed", 3000);
-        }
+            try
+            {
+                var (status, _) = _api.Post("/rest/db/scan");
+                ShowOsd(status == 200 ? "Rescanning all folders..." : $"Rescan failed (HTTP {status})", 3000);
+            }
+            catch (Exception ex)
+            {
+                TrayLog.Warn("MenuRescanAll POST threw: " + ex.Message);
+                ShowOsd("Rescan request failed", 3000);
+            }
+        });
     }
 
     private void MenuRescanFolder(string folderId)
@@ -1742,18 +1789,19 @@ internal sealed class TrayApplicationContext : ApplicationContext
             ShowOsd("API Key required — set in Settings", 3000);
             return;
         }
-        try
+        _ = Task.Run(() =>
         {
-            var (status, _) = _api.Post($"/rest/db/scan?folder={Uri.EscapeDataString(folderId)}");
-            if (status == 200)
-                ShowOsd($"Rescanning {folderId}...", 3000);
-            else
-                ShowOsd($"Rescan failed (HTTP {status})", 3000);
-        }
-        catch
-        {
-            ShowOsd("Rescan request failed", 3000);
-        }
+            try
+            {
+                var (status, _) = _api.Post($"/rest/db/scan?folder={Uri.EscapeDataString(folderId)}");
+                ShowOsd(status == 200 ? $"Rescanning {folderId}..." : $"Rescan failed (HTTP {status})", 3000);
+            }
+            catch (Exception ex)
+            {
+                TrayLog.Warn("MenuRescanFolder POST threw: " + ex.Message);
+                ShowOsd("Rescan request failed", 3000);
+            }
+        });
     }
 
     private void MenuRestart()

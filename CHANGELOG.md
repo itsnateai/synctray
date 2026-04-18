@@ -4,6 +4,12 @@
 
 All notable changes to SyncthingTray are documented here.
 
+## v2.2.24 — 2026-04-17
+
+### Reliability
+- **Tray menu no longer freezes when Syncthing is slow or dead.** Every menu click that talked to Syncthing — Pause, Resume, Rescan All, Rescan Folder, Check for Update, Upgrade Syncthing — was calling the REST API synchronously on the UI thread. With `HttpClient.Timeout = 5 s`, a dead or flaky Syncthing meant the menu stayed dismissed-but-frozen and the tray icon's tooltip stuck at "not responding" until the timeout popped. Worst offender: the pause auto-resume timer's deadline fire (user never clicked anything, yet their tray froze for up to 5 s). All seven HTTP sites now run on the thread pool via `Task.Run`; state mutations + icon/menu updates marshal back to UI via `RunOnUi`.
+- **Pause always sends the POST.** Previously, switching an active 5-min pause to a 30-min pause re-used the local `_paused=true` state and skipped the REST POST — which meant if Syncthing had been resumed externally through its Web UI, the tray kept showing "paused" until the next 10-second poll reconciled it. Duration changes now always re-post; `/rest/system/pause` is idempotent server-side so this is purely an accuracy fix, not a behavior change for the happy path.
+
 ## v2.2.23 — 2026-04-17
 
 ### Reliability
