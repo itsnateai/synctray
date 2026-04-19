@@ -4,6 +4,26 @@
 
 All notable changes to SyncthingTray are documented here.
 
+## v2.2.34 — 2026-04-18
+
+### Privacy
+- **Diagnostic logging now actually ships off by default.** The README, CHANGELOG, HelpForm, and in-tree `TrayLog` docstring all advertised `DiagnosticLogging` as opt-in via `DiagnosticLogging=1`, but the code default was `true` — so a fresh install with no INI quietly wrote to `%LOCALAPPDATA%\SyncthingTray\tray.log` on first run. The default is now `false`, matching every user-facing surface. Users who already opened Settings at least once have the key persisted explicitly in their INI, so their preference is preserved across upgrade.
+- **Settings-path no longer leaks the username into the log.** The `AppConfig.Load` failure branches (file locked, file corrupt) logged the full `%USERPROFILE%\…\SyncthingTray.ini` path. Now only the file name is logged — the load-failure reason is the useful signal, not the install location.
+
+### Security
+- **Update integrity: SHA256SUMS URL now goes through the same origin allowlist as the binary URL.** v2.2.33 validated the download URL against the `github.com/itsnateai/` + `objects.githubusercontent.com` allowlist, but the parallel `SHA256SUMS` fetch ran with no origin check — a tampered release JSON could redirect the hash file to an attacker host, defeating the integrity check end-to-end. Both URLs are now gated by the same helper.
+- **Remote version tag is strict-semver-validated before it touches the UI.** The `tag_name` field from GitHub's release JSON was interpolated raw into the Update dialog's status label and the "Downloading SyncthingTray v… " string — a compromised repo could push any renderable string there, including control characters, format specifiers, or a phishing hint. The tag is now parsed through a strict `\d+\.\d+\.\d+(-[a-z0-9.]+)?` whitelist before it reaches any render site; anything else short-circuits to an error.
+- **Pause-state file has a 256 KB read cap and bounds-checks its UTC ticks.** A tampered or runaway `pause.dat` could previously balloon past Int64 limits: `File.ReadAllLines` would OOM on a multi-GB file, and `new DateTime(ticks)` throws on out-of-range input. Either would brick the tray at startup with no OSD. The read is now capped and the tick value validated against `DateTime.MaxValue.Ticks` before the conversion.
+- **Folder labels and device names pass through a sanitiser before the menu renders them.** A hostile peer config could emit a folder label containing `&` (which WinForms treats as an accelerator-key prefix, stealing keyboard focus on menu open), CR/LF (which broke `TrayLog` interpolation into multi-line entries), or a multi-KB payload (menu layout crash). The new `MenuTextSanitizer` escapes `&`, strips C0/C1 control characters, and caps at 120 chars with a trailing ellipsis on truncation.
+
+### Race-conditions
+- **User-initiated pause no longer gets silently converted into an auto-pause.** A user clicking "Pause" between the poll-tick's `!_paused` read and the post-HTTP UI marshal would have their manual pause state overwritten with `_autoPaused = true`, causing the next network-category transition to auto-resume over their intent. The marshal now re-checks the state on the UI thread and bails if the user flipped it mid-flight. Matching guard added to the auto-resume branch.
+- **`_paused` and `_autoPaused` are now `volatile`.** Publication-ordering fix on the pool-thread reads — without it, the race-guard above could see stale cached values instead of the UI thread's most recent write.
+
+### Resource hygiene
+- **Update dialog's `CheckForUpdateAsync` disposes the prior CTS before overwriting.** Consistency fix — the sibling pattern at the download path already disposed the previous `CancellationTokenSource` before creating a new one; the check path didn't. A user who cancelled, then re-triggered "Check for updates" would leak one native event handle per round-trip.
+- **Update-toast now self-disposes on any close path.** The post-update toast was built from a one-shot outer timer + a `Form` + a dismiss timer + a font, each tracked manually. An external close (Alt-F4, `Application.Exit`) would skip the dismiss timer's disposal branch and orphan the font. The toast is now a `ToastWindow : Form` that owns all three resources and routes its teardown through the standard `Form.Dispose(bool)` chain.
+
 ## v2.2.33 — 2026-04-18
 
 ### Security

@@ -63,7 +63,7 @@ Updates — daily poll for new Syncthing releases.
 
 Sluggish menu — tray probes with a 1.5s TCP check when Syncthing is off.
 
-Log: %LOCALAPPDATA%\SyncthingTray\tray.log (opt out via DiagnosticLogging=0).
+Log: %LOCALAPPDATA%\SyncthingTray\tray.log (off by default — opt in via DiagnosticLogging=1).
 
 ——— LINKS ————————————————————————
 

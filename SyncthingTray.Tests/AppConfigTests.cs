@@ -244,10 +244,20 @@ public class AppConfigTests
     }
 
     [TestMethod]
-    public void DiagnosticLogging_DefaultsOn()
+    public void DiagnosticLogging_DefaultsOff()
     {
         var config = new AppConfig(_tempDir);
-        Assert.IsTrue(config.DiagnosticLogging, "Default should be true so field reports have content");
+        Assert.IsFalse(config.DiagnosticLogging,
+            "Default must be false — every user-facing surface advertises opt-in via DiagnosticLogging=1.");
+    }
+
+    [TestMethod]
+    public void DiagnosticLogging_ExplicitOnRoundTrips()
+    {
+        var iniPath = Path.Combine(_tempDir, "SyncthingTray.ini");
+        File.WriteAllText(iniPath, "[Settings]\nDiagnosticLogging=1\n");
+        var config = new AppConfig(_tempDir);
+        Assert.IsTrue(config.DiagnosticLogging);
     }
 
     // ─── Security validators ─────────────────────────────────────────

@@ -87,7 +87,7 @@ Settings are saved to `SyncthingTray.ini` in the application directory.
 
 ## Diagnostics
 
-A rolling log is written to `%LOCALAPPDATA%\SyncthingTray\tray.log` (1 MB cap, one-generation rotation to `.1`). Attach this file to any bug report. To disable logging, add `DiagnosticLogging=0` to `SyncthingTray.ini`.
+Diagnostic logging is **off by default**. To enable it, add `DiagnosticLogging=1` to `SyncthingTray.ini`. When enabled, a rolling log is written to `%LOCALAPPDATA%\SyncthingTray\tray.log` (1 MB cap, one-generation rotation to `.1`) — attach this file to any bug report.
 
 ## Uninstall
 

@@ -3,6 +3,7 @@ using System.Net.Http.Headers;
 using System.Reflection;
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 
 namespace SyncthingTray;
 
@@ -185,6 +186,7 @@ internal sealed class UpdateDialog : Form
 
     private async Task CheckForUpdateAsync()
     {
+        _cts?.Dispose();
         _cts = new CancellationTokenSource();
         _marqueeTimer.Start();
 
@@ -216,7 +218,19 @@ internal sealed class UpdateDialog : Form
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
 
-            _remoteVersion = root.GetProperty("tag_name").GetString()?.TrimStart('v') ?? "";
+            var rawTag = root.GetProperty("tag_name").GetString()?.TrimStart('v') ?? "";
+            // Strict semver whitelist before rendering. A compromised GitHub release's
+            // tag_name is otherwise interpolated raw into a dialog label and the
+            // "Downloading ..." status line. Accept only `MAJOR.MINOR.PATCH` with
+            // optional `-pre.1` style suffix. Anything else → treat as a bad release
+            // and bail out before _remoteVersion reaches any render site.
+            if (!IsSafeSemverTag(rawTag))
+            {
+                ShowError("GitHub release tag looks malformed.",
+                    "Refusing to render or download an unverified version string.");
+                return;
+            }
+            _remoteVersion = rawTag;
 
             if (root.TryGetProperty("assets", out var assets))
             {
@@ -304,11 +318,18 @@ internal sealed class UpdateDialog : Form
         _progressFill.Location = new Point(0, 0);
         _lblStatus.Text = $"Downloading {AppName} {_remoteVersion}...";
 
-        // Validate download URL origin before downloading
-        if (!_downloadUrl!.StartsWith("https://github.com/itsnateai/", StringComparison.OrdinalIgnoreCase) &&
-            !_downloadUrl.StartsWith("https://objects.githubusercontent.com/", StringComparison.OrdinalIgnoreCase))
+        // Origin allowlist: both the binary and its SHA256SUMS must come from the
+        // GitHub release endpoints. A tampered release JSON could otherwise point
+        // either URL at an attacker host — and a SHA256SUMS swap defeats hash
+        // verification end-to-end, so this check applies uniformly to both.
+        if (!IsAllowedReleaseAssetUrl(_downloadUrl))
         {
-            ShowError("Update failed: download URL is not from the expected source.", _downloadUrl);
+            ShowError("Update failed: download URL is not from the expected source.", _downloadUrl ?? "(null)");
+            return;
+        }
+        if (!IsAllowedReleaseAssetUrl(_hashFileUrl))
+        {
+            ShowError("Update failed: SHA256SUMS URL is not from the expected source.", _hashFileUrl ?? "(null)");
             return;
         }
 
@@ -582,51 +603,81 @@ internal sealed class UpdateDialog : Form
     internal static void ShowUpdateToast()
     {
         var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "?";
-        var timer = new System.Windows.Forms.Timer { Interval = 1500 };
-        timer.Tick += (_, _) =>
-        {
-            timer.Stop();
-            timer.Dispose();
 
-            var toast = new Form
-            {
-                FormBorderStyle = FormBorderStyle.None,
-                ShowInTaskbar = false,
-                TopMost = true,
-                StartPosition = FormStartPosition.Manual,
-                BackColor = BgColor,
-                ForeColor = FgColor,
-                AutoSize = true,
-                AutoSizeMode = AutoSizeMode.GrowAndShrink,
-                Padding = new Padding(12, 8, 12, 8)
-            };
-            var toastFont = new Font("Segoe UI", 9.5f, FontStyle.Bold);
+        // Two-stage timing. Stage 1: wait 1.5s after app start so the toast
+        // lands AFTER the tray icon has promoted. Stage 2: ToastWindow shows
+        // itself and self-disposes via FormClosed → Dispose chain, which
+        // cleans the inner dismiss timer and font even if the user Alt-F4s
+        // it or Application.Exit fires mid-flight.
+        var delay = new System.Windows.Forms.Timer { Interval = 1500 };
+        delay.Tick += (_, _) =>
+        {
+            delay.Stop();
+            delay.Dispose();
+            var toast = new ToastWindow($"\u2705 {AppName} updated to v{version}!");
+            toast.Show();
+        };
+        delay.Start();
+    }
+
+    /// <summary>
+    /// Owns the toast <see cref="Form"/>, its dismiss timer, and its font as a
+    /// single disposable unit. Prior inline implementation leaked the outer
+    /// timer, the form, and the dismiss timer on external close (Alt-F4 or
+    /// <see cref="Application.Exit"/>). WinForms routes form close → Dispose,
+    /// so overriding <see cref="Dispose(bool)"/> guarantees teardown.
+    /// </summary>
+    private sealed class ToastWindow : Form
+    {
+        private readonly System.Windows.Forms.Timer _dismiss;
+        private readonly Font _font;
+
+        public ToastWindow(string message)
+        {
+            FormBorderStyle = FormBorderStyle.None;
+            ShowInTaskbar = false;
+            TopMost = true;
+            StartPosition = FormStartPosition.Manual;
+            BackColor = BgColor;
+            ForeColor = FgColor;
+            AutoSize = true;
+            AutoSizeMode = AutoSizeMode.GrowAndShrink;
+            Padding = new Padding(12, 8, 12, 8);
+
+            _font = new Font("Segoe UI", 9.5f, FontStyle.Bold);
             var lbl = new Label
             {
-                Text = $"\u2705 {AppName} updated to v{version}!",
+                Text = message,
                 AutoSize = true,
-                Font = toastFont,
+                Font = _font,
                 ForeColor = FgColor,
                 BackColor = BgColor,
             };
-            toast.Controls.Add(lbl);
-            toast.FormClosed += (_, _) => toastFont.Dispose();
+            Controls.Add(lbl);
 
             var screen = (Screen.PrimaryScreen ?? Screen.AllScreens[0]).WorkingArea;
-            toast.Load += (_, _) =>
-                toast.Location = new Point(screen.Right - toast.Width - 20, screen.Bottom - toast.Height - 20);
-            toast.Show();
+            Load += (_, _) => Location = new Point(
+                screen.Right - Width - 20, screen.Bottom - Height - 20);
 
-            var dismiss = new System.Windows.Forms.Timer { Interval = 5000 };
-            dismiss.Tick += (_, _) =>
+            _dismiss = new System.Windows.Forms.Timer { Interval = 5000 };
+            _dismiss.Tick += (_, _) =>
             {
-                dismiss.Stop();
-                dismiss.Dispose();
-                toast.Close();
+                _dismiss.Stop();
+                Close();
             };
-            dismiss.Start();
-        };
-        timer.Start();
+            _dismiss.Start();
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                _dismiss.Stop();
+                _dismiss.Dispose();
+                _font.Dispose();
+            }
+            base.Dispose(disposing);
+        }
     }
 
     // ─── Winget Detection ──────────────────────────────────────
@@ -652,6 +703,29 @@ internal sealed class UpdateDialog : Form
     {
         try { if (File.Exists(path)) File.Delete(path); } catch { }
     }
+
+    /// <summary>
+    /// GitHub release endpoints only. `github.com/<owner>/...` serves the asset
+    /// redirect; `objects.githubusercontent.com` is the CDN it redirects to.
+    /// Any other origin (including other GitHub paths) is rejected.
+    /// </summary>
+    internal static bool IsAllowedReleaseAssetUrl(string? url)
+    {
+        if (string.IsNullOrEmpty(url)) return false;
+        return url.StartsWith("https://github.com/itsnateai/", StringComparison.OrdinalIgnoreCase)
+            || url.StartsWith("https://objects.githubusercontent.com/", StringComparison.OrdinalIgnoreCase);
+    }
+
+    // Compiled once: strict semver whitelist for GitHub release `tag_name`.
+    // Accepts `1.2.3` and `1.2.3-pre.1` / `1.2.3-rc2` etc. The leading `v` is
+    // already stripped by the caller. Rejects anything with whitespace, control
+    // chars, format specifiers, or other renderable surprises.
+    private static readonly Regex _safeSemver = new(
+        @"^\d{1,5}\.\d{1,5}\.\d{1,5}(-[a-z0-9][a-z0-9.]{0,31})?$",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    internal static bool IsSafeSemverTag(string? tag)
+        => !string.IsNullOrEmpty(tag) && _safeSemver.IsMatch(tag);
 
     private static string ComputeFileHash(string filePath)
     {

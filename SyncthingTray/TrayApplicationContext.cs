@@ -42,7 +42,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
     // volatile: publication ordering with `_folders` — readers that see the latch
     // set must also see the latest `_folders` assignment done immediately before it.
     private volatile bool _foldersLoadedSuccessfully;
-    private bool _paused;
+    // volatile: read by the poll-tick on a thread-pool thread to decide whether
+    // to fire auto-pause / auto-resume HTTP, written by the UI thread from
+    // MenuPause / MenuResume / ClearPauseState. The race guard on the UI-marshal
+    // paths relies on the read seeing the UI thread's latest write so that a
+    // user-initiated MenuPause landing mid-auto-pause doesn't get silently
+    // converted into an _autoPaused state by the pool-thread marshal.
+    private volatile bool _paused;
 
     // Absolute UTC time when a timed pause should auto-resume. null = no timed pause
     // active (either not paused at all, or an "Until resumed" pause with no deadline).
@@ -89,7 +95,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private string _pauseStatePath = string.Empty;
     private int _connectedCount;
     private int _totalDevices;
-    private bool _autoPaused;
+    // volatile: same concurrency contract as `_paused` — UI-thread write, pool-thread
+    // read in the auto-resume branch. A user-initiated ClearPauseState flipping this
+    // to false mid-auto-resume must win the race.
+    private volatile bool _autoPaused;
     private int _lastNetworkCategory = -1;
     private long _lastUpdateCheck;
     private string _updateAvailable = string.Empty;
@@ -243,11 +252,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             case AppConfigLoadResult.Locked:
                 ShowOsd("Settings file could not be read — using last session defaults", 6000);
-                TrayLog.Warn($"AppConfig.Load: file locked or unreadable: {_config.SettingsFilePath}");
+                TrayLog.Warn($"AppConfig.Load: file locked or unreadable: {Path.GetFileName(_config.SettingsFilePath)}");
                 break;
             case AppConfigLoadResult.Corrupt:
                 ShowOsd("SyncthingTray.ini appears corrupt — defaults loaded; original will be backed up on Save", 8000);
-                TrayLog.Warn($"AppConfig.Load: corrupt file detected: {_config.SettingsFilePath}");
+                TrayLog.Warn($"AppConfig.Load: corrupt file detected: {Path.GetFileName(_config.SettingsFilePath)}");
                 break;
         }
 
@@ -719,7 +728,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             var path = f.Path;
             var folderId = f.Id;
-            var subItem = new ToolStripMenuItem(f.Label);
+            var subItem = new ToolStripMenuItem(MenuTextSanitizer.Sanitize(f.Label));
             subItem.DropDownItems.Add("Open Folder", null, (_, _) => OpenFolder(path));
             subItem.DropDownItems.Add("Rescan", null, (_, _) => MenuRescanFolder(folderId));
             folderItem.DropDownItems.Add(subItem);
@@ -730,7 +739,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             if (!firstGroup) folderItem.DropDownItems.Add(new ToolStripSeparator());
             firstGroup = false;
-            folderItem.DropDownItems.Add(new ToolStripMenuItem(deviceName) { Enabled = false });
+            folderItem.DropDownItems.Add(new ToolStripMenuItem(MenuTextSanitizer.Sanitize(deviceName)) { Enabled = false });
             foreach (var f in byDevice[deviceName].OrderBy(x => x.Label, StringComparer.CurrentCultureIgnoreCase))
                 EmitFolder(f);
         }
@@ -1096,6 +1105,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
                             RunOnUi(() =>
                             {
                                 if (_disposed) return;
+                                // CAS guard: if the user flipped _paused true
+                                // (MenuPause) between the pool-thread read above
+                                // and this marshal, their action wins. Stamping
+                                // _autoPaused on their manual pause would cause
+                                // the next network transition to auto-resume over
+                                // their intent.
+                                if (_paused) return;
                                 _paused = true;
                                 _autoPaused = true;
                                 // Auto-pause has no deadline — it resumes on the next network
@@ -1124,6 +1140,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
                             RunOnUi(() =>
                             {
                                 if (_disposed) return;
+                                // CAS guard: if the user flipped the state (either
+                                // ClearPauseState dropped _autoPaused or MenuResume
+                                // cleared _paused) between the pool-thread read and
+                                // this marshal, there's nothing left to auto-resume.
+                                if (!_autoPaused || !_paused) return;
                                 ClearPauseState();
                                 UpdateTrayIcon();
                                 BuildMenu();
@@ -1716,11 +1737,23 @@ internal sealed class TrayApplicationContext : ApplicationContext
     /// reboot). Expired timed pauses are dropped so we don't re-pause a deadline
     /// that's already in the past.
     /// </summary>
+    // pause.dat has a fixed 3-line schema (minutes + ticks + auto flag). The real
+    // file is ~20 bytes. A tampered / runaway writer could balloon it to GB — we
+    // cap the read at 256 KB so a boot-time OOM can't brick the tray.
+    private const long PauseStateMaxBytes = 256 * 1024;
+
     private void RestorePauseStateOnStartup()
     {
         try
         {
             if (!File.Exists(_pauseStatePath)) return;
+            var info = new FileInfo(_pauseStatePath);
+            if (info.Length > PauseStateMaxBytes)
+            {
+                TrayLog.Warn($"RestorePauseStateOnStartup: pause.dat is {info.Length} bytes (cap {PauseStateMaxBytes}) — deleting.");
+                DeletePauseStateFile();
+                return;
+            }
             var lines = File.ReadAllLines(_pauseStatePath);
             if (lines.Length < 1 || !int.TryParse(lines[0], out int minutes))
             {
@@ -1757,6 +1790,15 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 if (lines.Length < 2 || !long.TryParse(lines[1], out long ticks))
                 {
                     TrayLog.Warn("RestorePauseStateOnStartup: timed pause missing ticks — deleting.");
+                    DeletePauseStateFile();
+                    return;
+                }
+                // Bounds-check: `new DateTime(ticks)` throws on negative or
+                // > DateTime.MaxValue.Ticks. Untrusted input (hand-edit, tampered
+                // pause.dat) must not OOM or crash the tray at boot.
+                if (ticks < 0 || ticks > DateTime.MaxValue.Ticks)
+                {
+                    TrayLog.Warn($"RestorePauseStateOnStartup: ticks out of range ({ticks}) — deleting.");
                     DeletePauseStateFile();
                     return;
                 }

@@ -28,11 +28,14 @@ internal sealed class AppConfig
     public bool StopOnExit { get; set; }
 
     /// <summary>
-    /// Default true: a long-term tray app benefits from having a persistent log
-    /// the user can attach to a bug report. 1 MB cap + 1-generation rotation
-    /// keeps the disk cost negligible. Opt-out via SyncthingTray.ini.
+    /// Opt-in: every other user-facing surface (README, CHANGELOG, HelpForm,
+    /// CLAUDE.md, TrayLog docstring) advertises this as opt-in via
+    /// `DiagnosticLogging=1`. Shipping a default of `true` contradicted the
+    /// consent model; v2.2.34 flipped this to `false` so the promise matches
+    /// the behaviour. Existing users who opened Settings at least once already
+    /// have the key persisted in their INI, so their preference is preserved.
     /// </summary>
-    public bool DiagnosticLogging { get; set; } = true;
+    public bool DiagnosticLogging { get; set; }
 
     public string SettingsFilePath { get; }
     public bool IsPortable { get; }
@@ -144,7 +147,7 @@ internal sealed class AppConfig
         AutoCheckUpdates = GetBool(settings, "AutoCheckUpdates", false);
         SoundNotifications = GetBool(settings, "SoundNotifications", false);
         StopOnExit = GetBool(settings, "StopOnExit", false);
-        DiagnosticLogging = GetBool(settings, "DiagnosticLogging", true);
+        DiagnosticLogging = GetBool(settings, "DiagnosticLogging", false);
 
         var exe = GetString(settings, "SyncExe", string.Empty);
         if (!string.IsNullOrEmpty(exe))
