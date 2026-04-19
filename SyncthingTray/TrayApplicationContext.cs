@@ -336,8 +336,19 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _iconTimer.Start();
         _pollTimer.Start();
 
-        PollSyncStatus();
-        LoadFolders();
+        // Both calls below do synchronous HTTP (IsReachable probe + /rest/system/status
+        // + /rest/config/folders + /rest/config/devices). Running them on the UI thread
+        // meant the tray icon appeared but the menu was unresponsive for up to ~1.8 s
+        // while Syncthing cold-started. Both functions are already written to be
+        // pool-safe (BuildMenu/UpdateTooltip/UpdateTrayIcon all self-marshal via
+        // RunOnUi), matching the poll-tick and PowerMode-resume call sites.
+        _ = Task.Run(() =>
+        {
+            try { PollSyncStatusCore(); }
+            catch (Exception ex) { TrayLog.Warn("StartAfterDelay PollSyncStatus faulted: " + ex.Message); }
+            try { LoadFolders(); }
+            catch (Exception ex) { TrayLog.Warn("StartAfterDelay LoadFolders faulted: " + ex.Message); }
+        });
     }
 
     // --- Tray Icon Events ---
@@ -558,7 +569,15 @@ internal sealed class TrayApplicationContext : ApplicationContext
                     if (remaining.TotalSeconds > 0)
                         resumeLabel = $"Resume Syncing (auto in {FormatPauseRemaining(remaining)})";
                 }
-                menu.Items.Add(resumeLabel, null, (_, _) => MenuResume());
+                // Overclick guard is on the click-path only; direct MenuResume callers
+                // (OnPauseTimerTick auto-resume, OnPowerModeChanged, and TogglePause's
+                // own guarded path) must not consume the 800 ms budget or the user's
+                // very next click after an automatic resume would get "Please wait…".
+                menu.Items.Add(resumeLabel, null, (_, _) =>
+                {
+                    if (IsOverclickGuarded(800)) return;
+                    MenuResume();
+                });
             }
             else
             {
@@ -726,7 +745,17 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
 
         folderItem.DropDownItems.Add(new ToolStripSeparator());
-        folderItem.DropDownItems.Add("Refresh List", null, (_, _) => LoadFolders());
+        folderItem.DropDownItems.Add("Refresh List", null, (_, _) =>
+        {
+            // Pool-thread hop — LoadFolders does synchronous HTTP (up to ~1.8 s on a
+            // slow Syncthing). Running on the UI thread froze the menu between click
+            // and dismiss. BuildMenu inside LoadFolders self-marshals back to the UI.
+            _ = Task.Run(() =>
+            {
+                try { LoadFolders(); }
+                catch (Exception ex) { TrayLog.Warn("Refresh List LoadFolders faulted: " + ex.Message); }
+            });
+        });
     }
 
     // --- Polling ---
@@ -1340,7 +1369,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
         finally
         {
-            _loadFoldersGate.Release();
+            // Swallow ObjectDisposedException on tray-exit race: if Dispose fires
+            // while a pool thread is still inside LoadFolders, _loadFoldersGate can
+            // be disposed before we reach here. The exception would be caught by
+            // the outer Task.Run catch but emit a misleading "LoadFolders faulted"
+            // log during normal clean exit.
+            try { _loadFoldersGate.Release(); }
+            catch (ObjectDisposedException) { }
         }
     }
 
@@ -1367,13 +1402,25 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
     private void OpenFolder(string path)
     {
-        // Skip the existence check on UNC / network paths — Directory.Exists
-        // against an unreachable share can block the UI thread for the full
-        // SMB timeout (~20-30 s). For local paths the check is sub-millisecond
-        // and lets us surface a friendly "not found" OSD instead of the shell's
-        // error dialog.
+        // Reject UNC, URI schemes (ms-settings:, shell:appsfolder\..., etc.),
+        // and non-fully-qualified paths before handing anything to the shell.
+        // Syncthing's /rest/config/folders is the source of truth for `path`,
+        // but defense-in-depth: a hostile peer-shared folder definition or a
+        // corrupted config could smuggle a protocol handler path through.
+        // UNC is refused (not just skipped) because Directory.Exists is bypassed
+        // on UNC for timeout reasons — we don't want Process.Start racing the
+        // shell against an unreachable share either.
+        int colonIdx = path.IndexOf(':');
         bool isUnc = path.StartsWith(@"\\", StringComparison.Ordinal);
-        if (!isUnc && !Directory.Exists(path))
+        bool hasUriColon = colonIdx >= 0 && colonIdx != 1;
+        if (isUnc || hasUriColon || !Path.IsPathFullyQualified(path))
+        {
+            string safe = path.Length > 80 ? path.Substring(0, 80) + "..." : path;
+            ShowOsd($"Folder path rejected: {safe}", 3500);
+            TrayLog.Warn($"OpenFolder rejected suspicious path: {path}");
+            return;
+        }
+        if (!Directory.Exists(path))
         {
             ShowOsd($"Folder not found: {path}", 3000);
             return;
@@ -1416,10 +1463,17 @@ internal sealed class TrayApplicationContext : ApplicationContext
             // URL etc.) reflect what the user just saved. No HTTP refetch.
             onApplied: BuildMenu,
             // Save: full path — refetch folder list + OSD confirmation.
+            // Hop to a pool thread so Save-click doesn't block the dialog close
+            // on LoadFolders's HTTP round-trip (up to 1.5 s + IsReachable probe
+            // ~300 ms). Matches the threading contract at the other LoadFolders
+            // call sites (poll-tick Task.Run(PollSyncStatusCore)).
             onSaved: () =>
             {
-                LoadFolders();
-                ShowOsd("Settings saved", 3000);
+                _ = Task.Run(() =>
+                {
+                    LoadFolders();
+                    RunOnUi(() => ShowOsd("Settings saved", 3000));
+                });
             });
         form.ShowDialog();
     }

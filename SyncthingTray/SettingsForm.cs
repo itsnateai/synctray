@@ -30,6 +30,12 @@ internal sealed class SettingsForm : Form
     private CheckBox _cbRelay = null!;
     private Label? _discoveryWarnLabel;
     private System.Windows.Forms.Timer? _discoveryRetryTimer;
+    // Bounded-retry counter for the 2 s discovery-probe loop. 30 ticks × 2 s = 60 s.
+    // After the cap we stop the timer, dispose it, and update the warning label so
+    // a permanently-unreachable Syncthing doesn't keep hitting /rest/config/options
+    // for the entire time the dialog is open. Reopening Settings re-arms the loop.
+    private const int DiscoveryRetryCapTicks = 30;
+    private int _discoveryRetryCount;
     private CheckBox _cbSoundNotify = null!;
     private CheckBox _cbStopOnExit = null!;
 
@@ -338,10 +344,23 @@ internal sealed class SettingsForm : Form
         // spamming /rest on a bad key just adds log noise.
         if (string.IsNullOrEmpty(_config.ApiKey)) return;
 
+        _discoveryRetryCount = 0;
         _discoveryRetryTimer = new System.Windows.Forms.Timer { Interval = 2000 };
         _discoveryRetryTimer.Tick += (_, _) =>
         {
             if (_disposed || IsDisposed) { _discoveryRetryTimer?.Stop(); return; }
+
+            if (++_discoveryRetryCount > DiscoveryRetryCapTicks)
+            {
+                _discoveryRetryTimer?.Stop();
+                _discoveryRetryTimer?.Dispose();
+                _discoveryRetryTimer = null;
+                if (_discoveryWarnLabel != null && !_discoveryWarnLabel.IsDisposed)
+                {
+                    _discoveryWarnLabel.Text = "(Syncthing unreachable — reopen Settings to retry)";
+                }
+                return;
+            }
 
             // Offload the probe + HTTP call to a pool thread. Running them on the
             // UI thread (300 ms IsReachable + up to 1500 ms HTTP) froze the dialog
@@ -538,6 +557,7 @@ internal sealed class SettingsForm : Form
             FlatStyle = FlatStyle.Flat,
             ForeColor = FgColor,
             BackColor = BgColor,
+            AccessibleName = "Check Config",
         };
         btnCheck.Click += OnCheckConfig;
         Controls.Add(btnCheck);
@@ -911,6 +931,7 @@ internal sealed class SettingsForm : Form
             FlatStyle = FlatStyle.Flat,
             ForeColor = FgColor,
             BackColor = BgColor,
+            AccessibleName = text,
         };
         btn.Click += (_, _) =>
         {

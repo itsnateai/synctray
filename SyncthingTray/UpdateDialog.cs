@@ -190,7 +190,7 @@ internal sealed class UpdateDialog : Form
 
         try
         {
-            var response = await _http.GetAsync(
+            using var response = await _http.GetAsync(
                 $"https://api.github.com/repos/{GitHubRepo}/releases/latest",
                 _cts.Token);
 

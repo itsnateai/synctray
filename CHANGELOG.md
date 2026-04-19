@@ -4,6 +4,24 @@
 
 All notable changes to SyncthingTray are documented here.
 
+## v2.2.32 — 2026-04-18
+
+### Reliability
+- **Tray startup no longer freezes while Syncthing cold-starts.** The post-launch sequence ran Syncthing's status poll and folder fetch synchronously on the UI thread, so a Syncthing that took its time to come up meant the tray icon appeared but the menu was unresponsive for up to ~1.8 seconds (a ~300 ms reachability probe + up to 1.5 s for `/rest/system/status` + `/rest/config/folders` + `/rest/config/devices`). Both calls now run on the thread pool, matching the steady-state poll tick and power-resume paths that were already pool-threaded.
+- **"Refresh List" menu item no longer freezes the menu.** The per-folder submenu's "Refresh List" entry was refetching folders synchronously on the UI thread, which held the context menu open-but-frozen for the duration of the HTTP call. Now runs on the thread pool — menu dismisses immediately, the list repopulates when the response arrives.
+- **Settings-Save no longer freezes on slow Syncthing.** Clicking "Save" in Settings refetched the folder list synchronously on the UI thread, so a Syncthing taking its time to respond (the 300 ms reachability probe + up to 1.5 s REST fetch) visibly stuttered the Save-and-close animation. The refresh now runs on the thread pool and the "Settings saved" OSD marshals back via the UI-thread dispatcher.
+- **Double-clicking Resume is debounced.** Every other click-handler in the tray menu was protected by an 800 ms overclick guard, but Resume wasn't — an impatient double-click could fire two `/rest/system/resume` POSTs back-to-back. Rare in practice (Syncthing handles it idempotently), but the guard now matches Pause and the other click-paths.
+- **Settings' "probe Syncthing until it appears" loop stops after 60 s.** The 2-second poll that auto-refreshes the discovery checkboxes while Settings is open had no retry cap — a permanently-unreachable Syncthing (wrong path, wrong API key, Syncthing uninstalled) meant the dialog kept hitting `/rest/config/options` every 2 seconds for the entire time the user left Settings sitting open. After 30 ticks the loop now stops, disposes the timer, and updates the warning label to prompt the user to reopen Settings.
+
+### Security
+- **Open-Folder menu items can't escape to arbitrary protocol handlers.** The per-folder "Open folder" menu entry called `Process.Start` on whatever `path` Syncthing's REST config advertised. Local paths worked fine; a hostile or corrupted config that smuggled in `ms-settings:…`, `shell:appsfolder\…`, or a UNC `\\attacker\share` would hand the shell a protocol invocation. The path is now validated — UNC, any URI-shaped colon outside drive-letter position, and non-fully-qualified paths are refused with an OSD before the shell ever sees them.
+
+### Resource hygiene
+- **Update dialog's GitHub response is disposed on every path.** `await _http.GetAsync(...)` assigned to a plain `var`; the early-return branches for HTTP 403 (rate-limit) and 404 (no releases) left the `HttpResponseMessage` to the finalizer. It's now a `using var` — disposal happens regardless of which branch exits first.
+
+### Accessibility
+- **Every button in Settings speaks its own name.** The six link buttons that open the Help / WebUI / log pages and the "Check Config" button were the last Settings controls without explicit `AccessibleName`. Screen readers now announce each one by its visible text instead of generic "button".
+
 ## v2.2.31 — 2026-04-18
 
 ### Docs
