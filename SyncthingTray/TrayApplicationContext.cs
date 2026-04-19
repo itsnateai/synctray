@@ -1400,6 +1400,17 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
     }
 
+    // Windows path APIs treat '\' and '/' as interchangeable separators, so
+    // `//srv/s`, `\/srv\s`, `/\srv\s` all normalise to UNC alongside `\\srv\s`.
+    // Prefix-string matching (StartsWith(@"\\")) only catches 1 of the 4 forms;
+    // predicate on character-class membership at positions [0] and [1] instead.
+    internal static bool IsUncPath(string path)
+    {
+        return path.Length >= 2
+            && (path[0] == '\\' || path[0] == '/')
+            && (path[1] == '\\' || path[1] == '/');
+    }
+
     private void OpenFolder(string path)
     {
         // Reject UNC, URI schemes (ms-settings:, shell:appsfolder\..., etc.),
@@ -1411,7 +1422,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         // on UNC for timeout reasons — we don't want Process.Start racing the
         // shell against an unreachable share either.
         int colonIdx = path.IndexOf(':');
-        bool isUnc = path.StartsWith(@"\\", StringComparison.Ordinal);
+        bool isUnc = IsUncPath(path);
         bool hasUriColon = colonIdx >= 0 && colonIdx != 1;
         if (isUnc || hasUriColon || !Path.IsPathFullyQualified(path))
         {

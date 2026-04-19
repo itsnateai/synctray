@@ -4,6 +4,11 @@
 
 All notable changes to SyncthingTray are documented here.
 
+## v2.2.33 — 2026-04-18
+
+### Security
+- **Open-Folder UNC guard now covers forward-slash and mixed-slash variants.** v2.2.32 introduced a UNC check to stop `Process.Start` from handing `\\attacker\share` to the Windows shell, but the check was a backslash-prefix match. .NET 8 and the Windows shell both treat `/` and `\` as interchangeable separators, so `//attacker/share`, `\/attacker\share`, and `/\attacker\share` all still flowed through to `Directory.Exists` (a 20-30 s SMB timeout if the peer is unreachable) and then to `Process.Start(UseShellExecute=true)` — reopening the same NTLM-hash-leak-via-SMB threat the v2.2.32 fix was meant to close. The detection now predicates on character-class membership at positions [0] and [1], closing all four slash permutations at once.
+
 ## v2.2.32 — 2026-04-18
 
 ### Reliability
