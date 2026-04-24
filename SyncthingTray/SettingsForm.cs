@@ -224,6 +224,7 @@ internal sealed class SettingsForm : Form
             }
             try
             {
+                // nosemgrep: gitlab.security_code_scan.SCS0001-1 -- url is validated as http/https via Uri.TryCreate on line 220 above; handed to Windows default browser
                 using var p = Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
             }
             catch (Exception ex)
@@ -935,6 +936,7 @@ internal sealed class SettingsForm : Form
         };
         btn.Click += (_, _) =>
         {
+            // nosemgrep: gitlab.security_code_scan.SCS0001-1 -- AddLinkButton is only called with hardcoded URLs (github.com/itsnateai/synctray, github.com/syncthing/syncthing)
             using var p = Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
         };
         Controls.Add(btn);

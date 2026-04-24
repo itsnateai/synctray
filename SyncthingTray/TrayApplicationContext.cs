@@ -1412,6 +1412,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
         try
         {
+            // nosemgrep: gitlab.security_code_scan.SCS0001-1 -- url is validated as http/https via Uri.TryCreate on line 1408 above; handed to Windows default browser
             using var p = Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
         }
         catch (Exception ex)
@@ -1467,6 +1468,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         {
             try
             {
+                // nosemgrep: gitlab.security_code_scan.SCS0001-1 -- path is defense-in-depth validated at lines 1445-1453: rejects UNC, URI schemes (ms-settings:, shell:appsfolder:...), and non-fully-qualified paths before reaching the shell
                 using var p = Process.Start(new ProcessStartInfo(path) { UseShellExecute = true });
             }
             catch (Exception ex)
@@ -1992,6 +1994,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
             // still releases the Process handle; otherwise it leaked until the
             // finalizer ran. Process.Id is only valid until Dispose, so capture
             // the int inside the using scope before releasing.
+            // nosemgrep: gitlab.security_code_scan.SCS0001-1 -- psi.FileName is _config.SyncExe (Syncthing binary path from the user's own local config file); local write access to the config would already imply arbitrary code exec via easier paths
             using var p = Process.Start(psi);
             if (p is null)
             {

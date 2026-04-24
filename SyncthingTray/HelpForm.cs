@@ -164,6 +164,7 @@ github.com/itsnateai/synctray";
         btnDocs.FlatAppearance.BorderColor = DividerColor;
         btnDocs.Click += (_, _) =>
         {
+            // nosemgrep: gitlab.security_code_scan.SCS0001-1 -- URL is a string literal, zero user input
             using var p = Process.Start(new ProcessStartInfo("https://docs.syncthing.net") { UseShellExecute = true });
         };
         Controls.Add(btnDocs);
