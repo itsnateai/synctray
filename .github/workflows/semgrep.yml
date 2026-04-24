@@ -20,6 +20,9 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
-      - run: semgrep ci
+      # --no-suppress-errors: fail the job if the scanner can't connect,
+      # download rules, or parse input. Without this, a dead SEMGREP_APP_TOKEN
+      # produces a green check while scanning zero rules (silent failure).
+      - run: semgrep ci --no-suppress-errors
         env:
           SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
