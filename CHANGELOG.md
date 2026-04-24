@@ -4,6 +4,11 @@
 
 All notable changes to SyncthingTray are documented here.
 
+## v2.2.35 — 2026-04-23
+
+### Security
+- **Self-updater now validates every redirect hop against an explicit allowlist, and the allowlist is future-proof to additional GitHub CDN hosts.** The prior updater validated only the initial download URL, then relied on `HttpClient`'s default transparent redirect follow — which would cheerfully 302 an allowlisted `github.com/itsnateai/synctray/...` hand-off to anywhere the `Location` header pointed. A tampered release JSON or a compromised upstream redirect could have steered either the binary or the `SHA256SUMS` fetch to an attacker host, defeating the integrity check end-to-end. The updater now disables auto-redirect and walks each hop manually through `SendAllowlistedAsync`, re-checking the host against the allowlist before issuing the GET. Host matching moved from prefix-string equality on two hardcoded CDN hosts to suffix-match on `*.githubusercontent.com` with repo-scoped exact-match on `api.github.com` / `github.com`, so future GitHub-controlled release-asset CDN rollouts (like the `release-assets.githubusercontent.com` host that appeared alongside `objects.githubusercontent.com` earlier this month) don't silently break the in-app updater.
+
 ## v2.2.34 — 2026-04-18
 
 ### Privacy

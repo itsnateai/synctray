@@ -416,4 +416,59 @@ public class AppConfigTests
         var content = "not enough parts\njust-one-token\nabc123  SyncthingTray.exe\n";
         Assert.AreEqual("abc123", UpdateDialog.ParseShaSum(content, "SyncthingTray.exe"));
     }
+
+    // ─── IsAllowedReleaseAssetUrl (v2.2.35 suffix-match + per-hop model) ────────
+
+    [TestMethod]
+    public void AllowUrl_GitHubReleaseDownload_Accepted() =>
+        Assert.IsTrue(UpdateDialog.IsAllowedReleaseAssetUrl(
+            "https://github.com/itsnateai/synctray/releases/download/v2.2.35/SyncthingTray.exe"));
+
+    [TestMethod]
+    public void AllowUrl_ApiGitHub_RepoScoped_Accepted() =>
+        Assert.IsTrue(UpdateDialog.IsAllowedReleaseAssetUrl(
+            "https://api.github.com/repos/itsnateai/synctray/releases/latest"));
+
+    [TestMethod]
+    public void AllowUrl_LegacyCdn_Accepted() =>
+        Assert.IsTrue(UpdateDialog.IsAllowedReleaseAssetUrl(
+            "https://objects.githubusercontent.com/github-production-release-asset/abc123"));
+
+    [TestMethod]
+    public void AllowUrl_NewCdn_Accepted() =>
+        Assert.IsTrue(UpdateDialog.IsAllowedReleaseAssetUrl(
+            "https://release-assets.githubusercontent.com/github-production-release-asset/abc123"));
+
+    [TestMethod]
+    public void AllowUrl_WrongOwner_OnGitHubCom_Rejected() =>
+        Assert.IsFalse(UpdateDialog.IsAllowedReleaseAssetUrl(
+            "https://github.com/attacker/synctray/releases/download/v9/SyncthingTray.exe"));
+
+    [TestMethod]
+    public void AllowUrl_WrongRepo_OnApiGitHub_Rejected() =>
+        Assert.IsFalse(UpdateDialog.IsAllowedReleaseAssetUrl(
+            "https://api.github.com/repos/itsnateai/OTHER/releases/latest"));
+
+    [TestMethod]
+    public void AllowUrl_HostnameSuffixSpoof_Rejected() =>
+        // `foo.githubusercontent.com.evil.example` would have passed a naive
+        // Contains check — suffix on the URI-parsed host rejects it correctly.
+        Assert.IsFalse(UpdateDialog.IsAllowedReleaseAssetUrl(
+            "https://foo.githubusercontent.com.evil.example/asset"));
+
+    [TestMethod]
+    public void AllowUrl_Http_Rejected() =>
+        Assert.IsFalse(UpdateDialog.IsAllowedReleaseAssetUrl(
+            "http://objects.githubusercontent.com/asset"));
+
+    [TestMethod]
+    public void AllowUrl_NullOrEmpty_Rejected()
+    {
+        Assert.IsFalse(UpdateDialog.IsAllowedReleaseAssetUrl(null));
+        Assert.IsFalse(UpdateDialog.IsAllowedReleaseAssetUrl(""));
+    }
+
+    [TestMethod]
+    public void AllowUrl_Malformed_Rejected() =>
+        Assert.IsFalse(UpdateDialog.IsAllowedReleaseAssetUrl("not a url"));
 }

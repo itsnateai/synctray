@@ -176,10 +176,50 @@ internal sealed class UpdateDialog : Form
     private static HttpClient CreateHttpClient()
     {
         var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "0.0.0";
-        var client = new HttpClient { Timeout = TimeSpan.FromSeconds(30) };
+        // Disable auto-redirect so every hop of a GET-chain is re-checked against
+        // IsAllowedReleaseAssetUrl. Default HttpClientHandler would transparently
+        // follow 3xx from an allowlisted origin to anywhere the Location header
+        // points — a tampered release JSON could route the binary or SHA256SUMS
+        // fetch to an attacker host via a crafted redirect. SendAllowlistedAsync
+        // below validates each hop before issuing the GET.
+        var handler = new HttpClientHandler { AllowAutoRedirect = false };
+        var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(30) };
         client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue(AppName, version));
         client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/vnd.github+json"));
         return client;
+    }
+
+    /// <summary>
+    /// Issue a GET and follow up to 5 redirects manually. Every hop's URL —
+    /// including the initial one — is validated via <see cref="IsAllowedReleaseAssetUrl"/>
+    /// before the request is sent. Throws if any hop lands off-list or the redirect
+    /// chain exceeds the hop limit.
+    /// </summary>
+    private static async Task<HttpResponseMessage> SendAllowlistedAsync(
+        string url, HttpCompletionOption completion, CancellationToken ct)
+    {
+        const int maxHops = 5;
+        for (int hop = 0; hop < maxHops; hop++)
+        {
+            if (!IsAllowedReleaseAssetUrl(url))
+                throw new HttpRequestException($"URL not in allowlist: {url}");
+
+            var response = await _http.GetAsync(url, completion, ct);
+
+            int status = (int)response.StatusCode;
+            if (status >= 300 && status < 400 && response.Headers.Location != null)
+            {
+                var next = response.Headers.Location.IsAbsoluteUri
+                    ? response.Headers.Location.ToString()
+                    : new Uri(new Uri(url), response.Headers.Location).ToString();
+                response.Dispose();
+                url = next;
+                continue;
+            }
+
+            return response;
+        }
+        throw new HttpRequestException($"Too many redirects (>{maxHops}) starting from initial URL.");
     }
 
     // ─── Check GitHub ───────────────────────────────────────────
@@ -192,8 +232,9 @@ internal sealed class UpdateDialog : Form
 
         try
         {
-            using var response = await _http.GetAsync(
+            using var response = await SendAllowlistedAsync(
                 $"https://api.github.com/repos/{GitHubRepo}/releases/latest",
+                HttpCompletionOption.ResponseContentRead,
                 _cts.Token);
 
             if (response.StatusCode == System.Net.HttpStatusCode.Forbidden)
@@ -358,7 +399,10 @@ internal sealed class UpdateDialog : Form
             string hashContent;
             try
             {
-                hashContent = await _http.GetStringAsync(_hashFileUrl, _cts!.Token);
+                using var hashResponse = await SendAllowlistedAsync(
+                    _hashFileUrl!, HttpCompletionOption.ResponseContentRead, _cts!.Token);
+                hashResponse.EnsureSuccessStatusCode();
+                hashContent = await hashResponse.Content.ReadAsStringAsync(_cts.Token);
             }
             catch (OperationCanceledException) { throw; }
             catch (Exception hashEx)
@@ -497,7 +541,7 @@ internal sealed class UpdateDialog : Form
 
     private async Task<bool> DownloadFileAsync(string url, string destPath)
     {
-        using var response = await _http.GetAsync(url, HttpCompletionOption.ResponseHeadersRead, _cts!.Token);
+        using var response = await SendAllowlistedAsync(url, HttpCompletionOption.ResponseHeadersRead, _cts!.Token);
         response.EnsureSuccessStatusCode();
 
         var totalBytes = response.Content.Headers.ContentLength ?? 0;
@@ -706,15 +750,25 @@ internal sealed class UpdateDialog : Form
     }
 
     /// <summary>
-    /// GitHub release endpoints only. `github.com/<owner>/...` serves the asset
-    /// redirect; `objects.githubusercontent.com` is the CDN it redirects to.
-    /// Any other origin (including other GitHub paths) is rejected.
+    /// Host-based allowlist validated at every redirect hop via
+    /// <see cref="SendAllowlistedAsync"/>. Suffix-matches *.githubusercontent.com
+    /// so future GitHub-controlled release-asset CDN hosts (beyond the already-seen
+    /// `objects.githubusercontent.com` and `release-assets.githubusercontent.com`)
+    /// keep working without another CVE-shaped code change. Repo scoping on
+    /// github.com/api.github.com prevents path traversal to unrelated repos.
     /// </summary>
     internal static bool IsAllowedReleaseAssetUrl(string? url)
     {
         if (string.IsNullOrEmpty(url)) return false;
-        return url.StartsWith("https://github.com/itsnateai/", StringComparison.OrdinalIgnoreCase)
-            || url.StartsWith("https://objects.githubusercontent.com/", StringComparison.OrdinalIgnoreCase);
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)) return false;
+        if (uri.Scheme != Uri.UriSchemeHttps) return false;
+        string host = uri.Host;
+        if (host.EndsWith(".githubusercontent.com", StringComparison.OrdinalIgnoreCase)) return true;
+        if (host.Equals("api.github.com", StringComparison.OrdinalIgnoreCase) &&
+            uri.AbsolutePath.StartsWith("/repos/itsnateai/synctray/", StringComparison.OrdinalIgnoreCase)) return true;
+        if (host.Equals("github.com", StringComparison.OrdinalIgnoreCase) &&
+            uri.AbsolutePath.StartsWith("/itsnateai/synctray/", StringComparison.OrdinalIgnoreCase)) return true;
+        return false;
     }
 
     // Compiled once: strict semver whitelist for GitHub release `tag_name`.
