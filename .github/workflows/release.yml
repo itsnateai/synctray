@@ -12,10 +12,10 @@ jobs:
   build-and-release:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v4
+        uses: actions/setup-dotnet@67a3573c9a986a3f9c594539f4ab511d57bb3ce9 # v4.3.1
         with:
           dotnet-version: '8.0.x'
 
@@ -26,9 +26,11 @@ jobs:
 
       - name: Update version in csproj
         shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
         run: |
           $csproj = Get-Content SyncthingTray/SyncthingTray.csproj -Raw
-          $csproj = $csproj -replace '<Version>.*?</Version>', "<Version>${{ steps.version.outputs.VERSION }}</Version>"
+          $csproj = $csproj -replace '<Version>.*?</Version>', "<Version>$env:VERSION</Version>"
           Set-Content SyncthingTray/SyncthingTray.csproj $csproj
 
       - name: Build self-contained
@@ -44,8 +46,10 @@ jobs:
 
       - name: Extract release notes from CHANGELOG
         shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.VERSION }}
         run: |
-          $version = "${{ steps.version.outputs.VERSION }}"
+          $version = $env:VERSION
           $content = Get-Content CHANGELOG.md -Raw
           # Capture the body between `## v<version> — <date>` and the next `## v<version>` (or end).
           # SyncTray CHANGELOG uses `## v2.2.6 — 2026-04-17` format; subsections use `###`.
