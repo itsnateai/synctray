@@ -4,6 +4,17 @@
 
 All notable changes to SyncthingTray are documented here.
 
+## v2.2.36 — 2026-04-25
+
+### Security
+- **Settings dialog now rejects UNC and forward-slash UNC paths for the syncthing.exe location.** Typing `\\attacker\share\syncthing.exe`, `//attacker/share/syncthing.exe`, or any mixed-slash variant into the path textbox previously persisted the value verbatim. The next "Restart Syncthing" call would `File.Exists()` the UNC, triggering an SMB/NTLM negotiation against the attacker's host and leaking your hash to their SMB responder. The path is now validated up-front through the same `ValidateSyncExe` gate that protects the INI-load path; rejection keeps your previous saved value and warns via OSD instead of silently saving the bad path. The fix uses the workspace's char-pair UNC predicate that was already deployed for `OpenFolder` in v2.2.33-v2.2.35 — one more boundary now consistently enforces the same defense.
+
+### Bug fixes
+- **Saving an unrelated setting no longer fails if your Syncthing path went missing.** If your `syncthing.exe` was uninstalled, moved, or renamed between sessions, opening Settings and clicking Save (to change "Run on startup", say) used to fail outright with "Syncthing path rejected — must be a local path to syncthing.exe". Now your previous valid path is kept, the rest of your settings save normally, and an OSD only warns if you actively typed a different rejected value.
+
+### Internals
+- **Update-check JSON parsing replaced with `JsonDocument`.** The "Check Now" button in Settings used a hand-rolled `IndexOf`-based parser to extract the latest version from Syncthing's `/rest/system/upgrade` response. The same anti-pattern was already called out as bypassable in another part of this file's docstring — now consistent with the rest of the codebase.
+
 ## v2.2.35 — 2026-04-23
 
 ### Security
