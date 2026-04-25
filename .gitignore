@@ -18,6 +18,10 @@ obj/
 *.suo
 *.DotSettings.user
 publish/
+TestResults/
+[Tt]est[Rr]esults/
+coverage*.xml
+coverage*.json
 
 # IDE / Editor
 .vscode/
