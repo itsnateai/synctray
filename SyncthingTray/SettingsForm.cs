@@ -466,15 +466,22 @@ internal sealed class SettingsForm : Form
                     bool newer = ParseJsonBool(body, "newer", false);
                     if (newer)
                     {
-                        int idx = body.IndexOf("\"latest\"", StringComparison.Ordinal);
+                        // Use JsonDocument — same standard ParseJsonBool's docstring
+                        // already calls out for this file. The prior IndexOf-based
+                        // parser would lock onto "latest" inside an unrelated string
+                        // value (the same bypass class ParseJsonBool was rewritten
+                        // to defeat). 2026-04-25 audit F2.
                         string ver = "unknown";
-                        if (idx >= 0)
+                        try
                         {
-                            int q1 = body.IndexOf('"', idx + 10);
-                            int q2 = body.IndexOf('"', q1 + 1);
-                            if (q1 >= 0 && q2 > q1)
-                                ver = body[(q1 + 1)..q2];
+                            using var doc = System.Text.Json.JsonDocument.Parse(body);
+                            if (doc.RootElement.TryGetProperty("latest", out var el) &&
+                                el.ValueKind == System.Text.Json.JsonValueKind.String)
+                            {
+                                ver = el.GetString() ?? "unknown";
+                            }
                         }
+                        catch (System.Text.Json.JsonException) { /* keep ver = "unknown" */ }
                         _osd.ShowMessage($"Update available: {ver}", 5000);
                     }
                     else
@@ -671,6 +678,21 @@ internal sealed class SettingsForm : Form
 
     private void ApplySettings(bool notify)
     {
+        // Validate the sync-exe path BEFORE mutating any config field. ValidateSyncExe
+        // rejects UNC paths (NTLM-leak via SMB auth on File.Exists/LaunchSyncthing),
+        // null-byte truncation, traversal, wrong filename, missing file. Without this
+        // gate the user's typed UNC survived the session and File.Exists in
+        // LaunchSyncthing triggered the leak. INI Load already enforces this; the
+        // missing call-site here is the gap closed by 2026-04-25 audit F1.
+        var validatedExe = AppConfig.ValidateSyncExe(_edSyncExe.Text);
+        if (validatedExe is null)
+        {
+            _osd.ShowMessage(
+                "Syncthing path rejected — must be a local path to syncthing.exe",
+                5000);
+            return;
+        }
+
         _config.DblClickAction = AppConfig.ActionIndexToValue(_cboDblClick.SelectedIndex);
         _config.MiddleClickAction = AppConfig.ActionIndexToValue(_cboMiddleClick.SelectedIndex);
         _config.RunOnStartup = _config.IsPortable ? false : _cbRunOnStartup.Checked;
@@ -680,7 +702,7 @@ internal sealed class SettingsForm : Form
         _config.SoundNotifications = _cbSoundNotify.Checked;
         _config.StopOnExit = _cbStopOnExit.Checked;
         _config.ApiKey = _edApiKey.Text;
-        _config.SyncExe = _edSyncExe.Text;
+        _config.SyncExe = validatedExe;
         _config.WebUI = AppConfig.ValidateWebUI(_edWebUI.Text);
 
         // NumericUpDown clamps to [Minimum, Maximum] on both spinner and typed input,
