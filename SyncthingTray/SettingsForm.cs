@@ -678,19 +678,32 @@ internal sealed class SettingsForm : Form
 
     private void ApplySettings(bool notify)
     {
-        // Validate the sync-exe path BEFORE mutating any config field. ValidateSyncExe
-        // rejects UNC paths (NTLM-leak via SMB auth on File.Exists/LaunchSyncthing),
-        // null-byte truncation, traversal, wrong filename, missing file. Without this
-        // gate the user's typed UNC survived the session and File.Exists in
-        // LaunchSyncthing triggered the leak. INI Load already enforces this; the
-        // missing call-site here is the gap closed by 2026-04-25 audit F1.
+        // Validate the sync-exe path. ValidateSyncExe rejects UNC paths (NTLM-leak
+        // via SMB auth on File.Exists/LaunchSyncthing), null-byte truncation,
+        // traversal, wrong filename, missing file. INI Load already enforces this;
+        // the missing call-site here is the gap closed by 2026-04-25 audit F1.
+        //
+        // On rejection we KEEP the previously-saved SyncExe and continue saving
+        // OTHER settings — locking the user out of saving "Run on startup" because
+        // their syncthing.exe was uninstalled or moved is unfriendly. OSD-warn only
+        // when the user actively typed something different (not on stale-from-load
+        // case where the textbox just mirrors a now-missing saved path).
         var validatedExe = AppConfig.ValidateSyncExe(_edSyncExe.Text);
         if (validatedExe is null)
         {
-            _osd.ShowMessage(
-                "Syncthing path rejected — must be a local path to syncthing.exe",
-                5000);
-            return;
+            if (!string.IsNullOrWhiteSpace(_edSyncExe.Text) &&
+                !string.Equals(_edSyncExe.Text, _config.SyncExe, StringComparison.Ordinal))
+            {
+                _osd.ShowMessage(
+                    "Syncthing path rejected — keeping previous value", 5000);
+            }
+            // Snap textbox back to what's actually persisted so the user can see
+            // their typed (rejected) value didn't take.
+            _edSyncExe.Text = _config.SyncExe ?? "";
+        }
+        else
+        {
+            _config.SyncExe = validatedExe;
         }
 
         _config.DblClickAction = AppConfig.ActionIndexToValue(_cboDblClick.SelectedIndex);
@@ -702,7 +715,6 @@ internal sealed class SettingsForm : Form
         _config.SoundNotifications = _cbSoundNotify.Checked;
         _config.StopOnExit = _cbStopOnExit.Checked;
         _config.ApiKey = _edApiKey.Text;
-        _config.SyncExe = validatedExe;
         _config.WebUI = AppConfig.ValidateWebUI(_edWebUI.Text);
 
         // NumericUpDown clamps to [Minimum, Maximum] on both spinner and typed input,

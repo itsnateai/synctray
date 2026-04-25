@@ -275,12 +275,23 @@ internal sealed class AppConfig
         // \\attacker\share\syncthing.exe would trigger an NTLM handshake against
         // the attacker on the local network, leaking the user's hash even before
         // File.Exists returns.
+        //
+        // Char-pair predicate catches all 4 mixed-slash UNC forms — \\srv, //srv,
+        // \/srv, /\srv. On Windows, File.Exists("//srv/share/...") normalizes the
+        // forward slashes to backslashes and triggers the same SMB authentication
+        // as a plain UNC path. Uri.IsUnc and StartsWith(@"\\") only catch the
+        // backslash variant. Same predicate as OpenFolder uses (v2.2.33-2.2.35).
+        if (path.Length >= 2 &&
+            (path[0] == '\\' || path[0] == '/') &&
+            (path[1] == '\\' || path[1] == '/'))
+            return null;
+        // Also catch URI-form UNC (file://server/share/) — Uri parses these distinctly
+        // from the leading-double-slash forms above.
         try
         {
             if (Uri.TryCreate(path, UriKind.Absolute, out var uri) && uri.IsUnc) return null;
         }
         catch { /* treat as invalid */ return null; }
-        if (path.StartsWith(@"\\", StringComparison.Ordinal)) return null;
         // Must be named syncthing.exe (case-insensitive)
         var fileName = Path.GetFileName(path);
         if (!fileName.Equals("syncthing.exe", StringComparison.OrdinalIgnoreCase)) return null;

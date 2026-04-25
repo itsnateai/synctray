@@ -312,6 +312,27 @@ public class AppConfigTests
     }
 
     [TestMethod]
+    public void ValidateSyncExe_RejectsForwardSlashUncVariants()
+    {
+        // 2026-04-25 verifier finding: Uri.IsUnc + StartsWith(@"\\") miss the
+        // forward-slash UNC forms. Windows File.Exists normalizes / → \, so all
+        // four mixed-slash forms trigger the SAME SMB/NTLM negotiation as a plain
+        // UNC path. Char-pair predicate (path[0]∈{\,/} && path[1]∈{\,/}) catches
+        // all four. See _templates/references/windows-path-validation-char-pair.md.
+        Assert.IsNull(AppConfig.ValidateSyncExe("//attacker/share/syncthing.exe"));
+        Assert.IsNull(AppConfig.ValidateSyncExe(@"\/attacker/share/syncthing.exe"));
+        Assert.IsNull(AppConfig.ValidateSyncExe(@"/\attacker/share/syncthing.exe"));
+    }
+
+    [TestMethod]
+    public void ValidateSyncExe_RejectsFileSchemeUnc()
+    {
+        // file://server/share/... is parseable as a UNC by Uri.IsUnc, distinct
+        // from the leading-double-slash forms above. Verify both code paths cover.
+        Assert.IsNull(AppConfig.ValidateSyncExe("file://attacker/share/syncthing.exe"));
+    }
+
+    [TestMethod]
     public void ValidateSyncExe_RejectsNullByteTruncation()
     {
         var dummy = Path.Combine(_tempDir, "syncthing.exe");
