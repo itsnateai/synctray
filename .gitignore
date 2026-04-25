@@ -49,3 +49,12 @@ SCHEDULED_TASKS.md
 ASSUMPTIONS.md
 WORKFLOW_STATE.md
 .swarmaudit/
+
+# Workspace scaffolding — never commit (defense-in-depth, prevents leaks of internal handoffs/audit prompts)
+*_HANDOFF.md
+*_PROMPT*.md
+*_READ_THIS.md
+PR_NOTES.md
+MERGE_NOTES.md
+CRASH_REPORT_*.md
+IMPLEMENTATION_PROMPT*.md
