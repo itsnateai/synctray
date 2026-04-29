@@ -31,11 +31,34 @@ jobs:
       - run: semgrep ci --no-suppress-errors --sarif --output=semgrep.sarif
         env:
           SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+      # Semgrep can emit `security-severity` as a string label ("High",
+      # "Medium", …); GitHub's SARIF parser requires a number on the
+      # 0.0–10.0 scale and rejects the upload with "invalid security
+      # severity value, is not a number" otherwise. Map labels to the
+      # documented buckets:
+      # https://docs.github.com/en/code-security/reference/code-scanning/sarif-support-for-code-scanning
+      - name: Normalize SARIF security-severity (semgrep label → numeric)
+        if: always() && hashFiles('semgrep.sarif') != ''
+        run: |
+          python3 - <<'PY'
+          import json
+          mapping = {"critical": "9.5", "high": "7.5", "medium": "5.5", "low": "2.0"}
+          with open("semgrep.sarif") as f:
+              sarif = json.load(f)
+          for run in sarif.get("runs", []):
+              for rule in run.get("tool", {}).get("driver", {}).get("rules", []):
+                  props = rule.get("properties", {})
+                  v = props.get("security-severity")
+                  if isinstance(v, str):
+                      props["security-severity"] = mapping.get(v.lower(), "0.0")
+          with open("semgrep.sarif", "w") as f:
+              json.dump(sarif, f)
+          PY
       # `if: always()` so SARIF still uploads when semgrep ci exits non-zero
       # on policy-blocking findings — that's exactly when we want the alerts
       # in the Security tab.
       - name: Upload SARIF to GitHub Security tab
         if: always()
-        uses: github/codeql-action/upload-sarif@ce64ddcb0d8d890d2df4a9d1c04ff297367dea2a # v3
+        uses: github/codeql-action/upload-sarif@95e58e9a2cdfd71adc6e0353d5c52f41a045d225 # v4
         with:
           sarif_file: semgrep.sarif
