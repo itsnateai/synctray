@@ -18,11 +18,24 @@ jobs:
     if: (github.actor != 'dependabot[bot]')
     permissions:
       contents: read
+      security-events: write  # required by github/codeql-action/upload-sarif
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+      # `--sarif --output=…` writes findings to a file so we can upload to
+      # GitHub's Security tab via codeql-action below — in addition to the
+      # platform push that SEMGREP_APP_TOKEN does. Without this, warn-level
+      # findings only live on semgrep.dev and `code-scanning/alerts` 404s.
       # --no-suppress-errors: fail the job if the scanner can't connect,
       # download rules, or parse input. Without this, a dead SEMGREP_APP_TOKEN
       # produces a green check while scanning zero rules (silent failure).
-      - run: semgrep ci --no-suppress-errors
+      - run: semgrep ci --no-suppress-errors --sarif --output=semgrep.sarif
         env:
           SEMGREP_APP_TOKEN: ${{ secrets.SEMGREP_APP_TOKEN }}
+      # `if: always()` so SARIF still uploads when semgrep ci exits non-zero
+      # on policy-blocking findings — that's exactly when we want the alerts
+      # in the Security tab.
+      - name: Upload SARIF to GitHub Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@ce64ddcb0d8d890d2df4a9d1c04ff297367dea2a # v3
+        with:
+          sarif_file: semgrep.sarif
