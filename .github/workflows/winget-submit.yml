@@ -23,13 +23,25 @@ jobs:
       - name: Resolve tag
         id: tag
         shell: pwsh
+        # Funnel attacker-controllable inputs (tag names, dispatch inputs)
+        # through env vars instead of `${{ … }}` template substitution into
+        # the script body. PowerShell treats env values as opaque strings;
+        # template substitution would let a tag like `v1';evil-code;#` break
+        # out of the surrounding quotes and execute arbitrary commands with
+        # access to WINGET_PAT.
+        # https://docs.github.com/en/actions/security-guides/security-hardening-for-github-actions
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ github.event.inputs.tag }}
         run: |
-          if ('${{ github.event_name }}' -eq 'release') {
-            $t = '${{ github.event.release.tag_name }}'
-          } else {
-            $t = '${{ github.event.inputs.tag }}'
+          $t = if ($env:EVENT_NAME -eq 'release') { $env:EVENT_TAG } else { $env:INPUT_TAG }
+          # Strict tag-name validation — accept only `vMAJOR.MINOR.PATCH`
+          # optionally followed by a prerelease suffix. Defense-in-depth in
+          # case the env-var funnel is ever bypassed.
+          if ($t -notmatch '^v\d+\.\d+\.\d+(-[A-Za-z0-9.-]+)?$') {
+            throw "Tag '$t' must match vMAJOR.MINOR.PATCH (optionally -prerelease)"
           }
-          if (-not $t.StartsWith('v')) { throw "Tag must start with v" }
           $ver = $t.Substring(1)
           echo "TAG=$t"       >> $env:GITHUB_OUTPUT
           echo "VERSION=$ver" >> $env:GITHUB_OUTPUT
@@ -43,13 +55,18 @@ jobs:
 
       - name: Submit PR
         shell: pwsh
+        env:
+          # Same hardening for the second `run:` body — env-var everything
+          # that gets substituted into the script.
+          TAG: ${{ steps.tag.outputs.TAG }}
+          VERSION: ${{ steps.tag.outputs.VERSION }}
+          REPOSITORY: ${{ github.repository }}
+          WINGET_PAT: ${{ secrets.WINGET_PAT }}
         run: |
-          $tag = "${{ steps.tag.outputs.TAG }}"
-          $ver = "${{ steps.tag.outputs.VERSION }}"
-          $url = "https://github.com/${{ github.repository }}/releases/download/$tag/$env:ASSET_NAME"
-          Write-Host "Submitting $env:PACKAGE_IDENTIFIER v$ver from $url"
+          $url = "https://github.com/$($env:REPOSITORY)/releases/download/$($env:TAG)/$($env:ASSET_NAME)"
+          Write-Host "Submitting $env:PACKAGE_IDENTIFIER v$($env:VERSION) from $url"
           ./wingetcreate.exe update $env:PACKAGE_IDENTIFIER `
-            --version $ver `
+            --version $env:VERSION `
             --urls $url `
             --submit `
-            --token "${{ secrets.WINGET_PAT }}"
+            --token $env:WINGET_PAT
