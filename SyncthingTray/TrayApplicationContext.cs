@@ -100,6 +100,16 @@ internal sealed class TrayApplicationContext : ApplicationContext
     // to false mid-auto-resume must win the race.
     private volatile bool _autoPaused;
     private int _lastNetworkCategory = -1;
+
+    // Tracks Syncthing's startTime as reported by /rest/system/status. If it
+    // changes between consecutive polls while we hold a manual pause, the daemon
+    // was restarted (auto-update, crash, sleep/wake) and forgot its runtime pause
+    // — re-arm _pauseNeedsReapply so the connections-poll's external-resume
+    // branch doesn't silently drop our pause. Empty before the first observation;
+    // never reset to empty on transient HTTP failures (so a flaky poll doesn't
+    // wipe the baseline and miss a real restart on the tick after).
+    private string _lastSyncthingStartTime = string.Empty;
+
     private long _lastUpdateCheck;
     private string _updateAvailable = string.Empty;
     private string _updateRunning = string.Empty;
@@ -892,6 +902,46 @@ internal sealed class TrayApplicationContext : ApplicationContext
             return;
         }
 
+        // 1.5. Daemon-restart detection.
+        //
+        // /rest/system/pause is runtime-only — if the Syncthing daemon restarts
+        // (auto-update, crash, sleep/wake handoff) while we hold _paused=true,
+        // it forgets the pause. Without this guard, the next /rest/system/connections
+        // poll would report allPaused=false and the external-resume branch below
+        // would silently call ClearPauseState() + delete pause.dat. By comparing
+        // startTime across polls and re-arming _pauseNeedsReapply on change, we
+        // re-use the same handshake RestorePauseStateOnStartup already relies on.
+        try
+        {
+            var (sts, sbody) = _api.Get("/rest/system/status", timeoutMs: 1500);
+            if (sts == 200)
+            {
+                using var sdoc = JsonDocument.Parse(sbody);
+                if (sdoc.RootElement.TryGetProperty("startTime", out var stEl))
+                {
+                    string startTime = stEl.GetString() ?? string.Empty;
+                    if (startTime.Length > 0)
+                    {
+                        if (_lastSyncthingStartTime.Length > 0
+                            && startTime != _lastSyncthingStartTime
+                            && _paused
+                            && !_pauseNeedsReapply)
+                        {
+                            TrayLog.Info($"Syncthing daemon restart detected (startTime {_lastSyncthingStartTime} -> {startTime}); re-arming pause reapply.");
+                            _pauseNeedsReapply = true;
+                        }
+                        _lastSyncthingStartTime = startTime;
+                    }
+                }
+            }
+            // Non-200 / parse miss: leave _lastSyncthingStartTime intact so a single
+            // flaky tick doesn't wipe the baseline and mask a real restart next tick.
+        }
+        catch
+        {
+            // Best-effort detection — never let this break the rest of the poll.
+        }
+
         // Lazy folder reload — when the tray starts while Syncthing is off, LoadFolders
         // bails on the probe and leaves _folders empty. Once Syncthing comes up and a
         // poll succeeds, refetch so the "Synced Folders" submenu appears without the
@@ -996,8 +1046,13 @@ internal sealed class TrayApplicationContext : ApplicationContext
                                 // External resume (user hit Resume in Web UI, or our deadline
                                 // already fired and Syncthing reflects it): drop our timer +
                                 // sidecar so a stale deadline doesn't double-fire MenuResume().
+                                // Logged at INFO so a silent state transition is grep-able in
+                                // tray.log when investigating "sync kicked back on" reports.
                                 if (wasPaused && !_paused)
+                                {
+                                    TrayLog.Info("External resume detected (Syncthing reports allPaused=false while we held a pause) — clearing local pause state.");
                                     ClearPauseState();
+                                }
                             });
                         }
                     }
