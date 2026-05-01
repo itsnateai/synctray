@@ -4,6 +4,11 @@
 
 All notable changes to SyncthingTray are documented here.
 
+## v2.2.38 — 2026-05-01
+
+### Reliability
+- **Manual pauses now survive a Syncthing daemon restart that happens while SyncthingTray stays running.** If the Syncthing process restarted mid-session — auto-update, crash, sleep/wake handoff — its in-memory pause state was lost; the next connections poll reported the daemon as no longer paused, and SyncthingTray treated the discrepancy as an external resume, silently clearing your pause-until time and deleting `pause.dat`. The pause-until UI looked normal but the daemon was already syncing again. SyncthingTray now tracks the daemon's reported start time on each poll and re-arms the pause-reapply handshake when the start time changes while a manual pause is held — same mechanism that already restores the pause across a tray-app restart, just no longer one-shot. The external-resume transition is now also INFO-logged (it was previously silent), so a "sync kicked back on" report is grep-able in `tray.log`.
+
 ## v2.2.36 — 2026-04-25
 
 ### Security
