@@ -116,6 +116,20 @@ dotnet publish SyncthingTray/SyncthingTray.csproj -c Release -r win-x64 --self-c
 
 Output: `SyncthingTray/bin/Release/net8.0-windows/win-x64/publish/SyncthingTray.exe`
 
+## Supporting This Project
+
+This app is free and open source. If it saves you time, consider supporting continued development:
+
+<p>
+  <a href="https://buymeacoffee.com/itsnate"><img src="https://img.shields.io/badge/Buy%20Me%20a%20Coffee-FFDD00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me a Coffee"></a>
+</p>
+
+- **[Buy Me a Coffee](https://buymeacoffee.com/itsnate)** — one-time support
+
+You can also build from source for free — see the build instructions above.
+
+---
+
 ## License
 
 MIT
