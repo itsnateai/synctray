@@ -53,6 +53,11 @@ internal sealed class SyncthingApi : IDisposable
         return DoRequest(HttpMethod.Patch, endpoint, body, timeoutMs);
     }
 
+    public (int StatusCode, string Body) Put(string endpoint, string body, int? timeoutMs = null)
+    {
+        return DoRequest(HttpMethod.Put, endpoint, body, timeoutMs);
+    }
+
     /// <summary>
     /// Fast TCP connect probe. Returns true if the Syncthing WebUI port is accepting
     /// connections. Used to skip full HTTP calls on the UI thread when Syncthing is

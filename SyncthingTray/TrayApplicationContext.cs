@@ -2,6 +2,7 @@ using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Management;
 using System.Text.Json;
+using System.Text.Json.Nodes;
 
 namespace SyncthingTray;
 
@@ -109,6 +110,21 @@ internal sealed class TrayApplicationContext : ApplicationContext
     // never reset to empty on transient HTTP failures (so a flaky poll doesn't
     // wipe the baseline and miss a real restart on the tick after).
     private string _lastSyncthingStartTime = string.Empty;
+
+    // Snapshot of folder/device IDs that the tray flipped paused=true. v2.2.39
+    // introduces a config-level flip (PUT /rest/config) so resume can restore
+    // exactly the IDs we paused — preserves user-intentional folder pauses that
+    // existed before MenuPause. Persisted to pause.dat as v3 schema (lines 5-6).
+    // Empty list with _paused=true (legacy v2 pause.dat from <= v2.2.38) means
+    // "we don't remember what we paused — fall back to flipping every paused
+    // entry to unpaused on resume", which is also the unwedge path for users
+    // who upgraded from v2.2.38 with config-paused folders.
+    //
+    // Lock: _pauseSnapshotLock — both UI thread (MenuPause/Resume) and pool
+    // thread (ReapplyInheritedPause/auto-pause) read+write the lists.
+    private readonly object _pauseSnapshotLock = new();
+    private List<string> _trayPausedFolderIds = new();
+    private List<string> _trayPausedDeviceIds = new();
 
     private long _lastUpdateCheck;
     private string _updateAvailable = string.Empty;
@@ -1154,8 +1170,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
                     // this block's 99/100 silent success is exactly the symptom.
                     if (cat == 0 && !_paused)
                     {
-                        var (status, _) = _api.Post("/rest/system/pause");
-                        if (status == 200)
+                        // v2.2.39: config-level pause via PUT /rest/config (same as MenuPause).
+                        // Snapshot what we flip so auto-resume restores exactly that set.
+                        var (flippedFolders, flippedDevices, ok) = ApplyConfigPause(targetPaused: true);
+                        if (ok)
                         {
                             RunOnUi(() =>
                             {
@@ -1169,6 +1187,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
                                 if (_paused) return;
                                 _paused = true;
                                 _autoPaused = true;
+                                lock (_pauseSnapshotLock)
+                                {
+                                    _trayPausedFolderIds = flippedFolders;
+                                    _trayPausedDeviceIds = flippedDevices;
+                                }
                                 // Auto-pause has no deadline — it resumes on the next network
                                 // category transition, not on a clock. Unify the state so the
                                 // menu renders "Resume Syncing" (no countdown).
@@ -1183,14 +1206,25 @@ internal sealed class TrayApplicationContext : ApplicationContext
                         }
                         else
                         {
-                            ShowOsd($"Auto-pause FAILED (HTTP {status}) — still syncing on public network", 6000);
-                            TrayLog.Warn($"Auto-pause request returned HTTP {status}; _paused not flipped.");
+                            ShowOsd("Auto-pause FAILED — still syncing on public network", 6000);
+                            TrayLog.Warn("Auto-pause: ApplyConfigPause failed; _paused not flipped.");
                         }
                     }
                     else if (cat != 0 && _autoPaused)
                     {
-                        var (status, _) = _api.Post("/rest/system/resume");
-                        if (status == 200)
+                        // v2.2.39: restore exactly the IDs we flipped on auto-pause.
+                        HashSet<string>? folderFilter = null;
+                        HashSet<string>? deviceFilter = null;
+                        lock (_pauseSnapshotLock)
+                        {
+                            if (_trayPausedFolderIds.Count > 0 || _trayPausedDeviceIds.Count > 0)
+                            {
+                                folderFilter = new HashSet<string>(_trayPausedFolderIds, StringComparer.Ordinal);
+                                deviceFilter = new HashSet<string>(_trayPausedDeviceIds, StringComparer.Ordinal);
+                            }
+                        }
+                        var (_, _, ok) = ApplyConfigPause(targetPaused: false, folderIdFilter: folderFilter, deviceIdFilter: deviceFilter);
+                        if (ok)
                         {
                             RunOnUi(() =>
                             {
@@ -1208,8 +1242,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
                         }
                         else
                         {
-                            ShowOsd($"Auto-resume FAILED (HTTP {status}) — still paused", 5000);
-                            TrayLog.Warn($"Auto-resume request returned HTTP {status}.");
+                            ShowOsd("Auto-resume FAILED — still paused", 5000);
+                            TrayLog.Warn("Auto-resume: ApplyConfigPause failed.");
                         }
                     }
                 }
@@ -1607,20 +1641,18 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
         _ = Task.Run(() =>
         {
-            int status;
-            try
+            // v2.2.39: atomic config flip via PUT /rest/config — captures which
+            // folders/devices were not-paused and flips them. The legacy
+            // /rest/system/pause endpoint only mutates DEVICES (per Syncthing v2
+            // source); using the asymmetric pair (system/pause + system/resume)
+            // wedged users when folders ended up config-paused some other way
+            // (e.g. web UI Actions). PUT the whole config so we own both axes.
+            // Returned lists become the snapshot for resume so user-intentional
+            // folder pauses outside our flip set are preserved.
+            var (flippedFolders, flippedDevices, ok) = ApplyConfigPause(targetPaused: true);
+            if (!ok)
             {
-                status = _api.Post("/rest/system/pause").StatusCode;
-            }
-            catch (Exception ex)
-            {
-                TrayLog.Warn("MenuPause POST threw: " + ex.Message);
                 ShowOsd("Failed to pause syncing", 3000);
-                return;
-            }
-            if (status != 200)
-            {
-                ShowOsd($"Pause failed (HTTP {status})", 3000);
                 return;
             }
             RunOnUi(() =>
@@ -1628,6 +1660,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 if (_disposed) return;
                 _paused = true;
                 _activePauseMinutes = minutes;
+                lock (_pauseSnapshotLock)
+                {
+                    _trayPausedFolderIds = flippedFolders;
+                    _trayPausedDeviceIds = flippedDevices;
+                }
                 _pauseTimer.Stop();
                 if (minutes > 0)
                 {
@@ -1660,22 +1697,34 @@ internal sealed class TrayApplicationContext : ApplicationContext
         }
         _ = Task.Run(() =>
         {
-            int status;
-            try
+            // v2.2.39: restore exactly the IDs MenuPause snapshotted — preserves
+            // user-intentional folder/device pauses that were already paused
+            // before our flip. Empty snapshot = legacy v2 pause.dat from older
+            // versions OR fresh state with config-pause-wedge: fall back to
+            // "unpause everything currently paused" so upgraders get unwedged
+            // on first Resume click.
+            HashSet<string>? folderFilter = null;
+            HashSet<string>? deviceFilter = null;
+            lock (_pauseSnapshotLock)
             {
-                status = _api.Post("/rest/system/resume").StatusCode;
+                if (_trayPausedFolderIds.Count > 0 || _trayPausedDeviceIds.Count > 0)
+                {
+                    folderFilter = new HashSet<string>(_trayPausedFolderIds, StringComparer.Ordinal);
+                    deviceFilter = new HashSet<string>(_trayPausedDeviceIds, StringComparer.Ordinal);
+                }
             }
-            catch (Exception ex)
+
+            var (_, _, ok) = ApplyConfigPause(
+                targetPaused: false,
+                folderIdFilter: folderFilter,
+                deviceIdFilter: deviceFilter);
+
+            if (!ok)
             {
-                TrayLog.Warn("MenuResume POST threw: " + ex.Message);
                 ShowOsd("Failed to resume syncing", 3000);
                 return;
             }
-            if (status != 200)
-            {
-                ShowOsd($"Resume failed (HTTP {status})", 3000);
-                return;
-            }
+
             RunOnUi(() =>
             {
                 if (_disposed) return;
@@ -1699,6 +1748,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
         _pauseResumeAtUtc = null;
         _pauseNeedsReapply = false;
         _pauseTimer.Stop();
+        lock (_pauseSnapshotLock)
+        {
+            _trayPausedFolderIds = new List<string>();
+            _trayPausedDeviceIds = new List<string>();
+        }
         DeletePauseStateFile();
     }
 
@@ -1749,6 +1803,14 @@ internal sealed class TrayApplicationContext : ApplicationContext
         return $"{secs} sec";
     }
 
+    // pause.dat schema v3 marker on line 4. Lines 5/6 carry the tray-paused
+    // folder/device ID lists (pipe-separated). Older v2 readers (lines 1-3 only)
+    // safely ignore the extra lines; v3 readers detect the marker and load the
+    // snapshot. Pipe is safe because Syncthing folder IDs are 5+5 lowercase
+    // hex (e.g. "agwci-hd37s") and device IDs are dash-separated base32 — neither
+    // can contain '|'.
+    private const string PauseStateSchemaV3 = "v3";
+
     private void PersistPauseState()
     {
         try
@@ -1764,9 +1826,18 @@ internal sealed class TrayApplicationContext : ApplicationContext
             // inherited auto-pause when the network is no longer public — otherwise a
             // reboot mid-auto-pause would leave sync stuck paused even after returning
             // to a private network.
+            // Line 4: schema marker "v3" (introduced in SyncthingTray v2.2.39).
+            // Line 5: pipe-separated folder IDs the tray flipped paused=true.
+            // Line 6: pipe-separated device IDs the tray flipped paused=true.
             var ticksLine = _pauseResumeAtUtc is DateTime due ? due.Ticks.ToString(System.Globalization.CultureInfo.InvariantCulture) : string.Empty;
             var autoLine = _autoPaused ? "1" : "0";
-            var body = $"{_activePauseMinutes}\n{ticksLine}\n{autoLine}";
+            string folderLine, deviceLine;
+            lock (_pauseSnapshotLock)
+            {
+                folderLine = string.Join('|', _trayPausedFolderIds);
+                deviceLine = string.Join('|', _trayPausedDeviceIds);
+            }
+            var body = $"{_activePauseMinutes}\n{ticksLine}\n{autoLine}\n{PauseStateSchemaV3}\n{folderLine}\n{deviceLine}";
             File.WriteAllText(_pauseStatePath, body);
         }
         catch (Exception ex)
@@ -1876,10 +1947,31 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 _pauseResumeAtUtc = null;
             }
 
+            // v3 schema: lines 4-6 carry the snapshot. Missing schema marker = legacy v2
+            // pause.dat (pre-v2.2.39) — leave snapshots empty; ReapplyInheritedPause +
+            // MenuResume will fall back to "flip everything" which auto-unwedges users
+            // upgrading from v2.2.38 with config-paused folders.
+            int snapshotFolders = 0, snapshotDevices = 0;
+            if (lines.Length >= 4 && lines[3].Trim() == PauseStateSchemaV3)
+            {
+                if (lines.Length >= 5 && lines[4].Length > 0)
+                {
+                    var ids = lines[4].Split('|', StringSplitOptions.RemoveEmptyEntries);
+                    lock (_pauseSnapshotLock) { _trayPausedFolderIds = new List<string>(ids); }
+                    snapshotFolders = ids.Length;
+                }
+                if (lines.Length >= 6 && lines[5].Length > 0)
+                {
+                    var ids = lines[5].Split('|', StringSplitOptions.RemoveEmptyEntries);
+                    lock (_pauseSnapshotLock) { _trayPausedDeviceIds = new List<string>(ids); }
+                    snapshotDevices = ids.Length;
+                }
+            }
+
             _paused = true;
             _autoPaused = wasAutoPaused;
             _pauseNeedsReapply = true;
-            TrayLog.Info($"RestorePauseStateOnStartup: inherited pause ({FormatPauseDuration(minutes)}, auto={wasAutoPaused}); Syncthing will be re-paused on first successful poll.");
+            TrayLog.Info($"RestorePauseStateOnStartup: inherited pause ({FormatPauseDuration(minutes)}, auto={wasAutoPaused}, snapshot {snapshotFolders}f/{snapshotDevices}d); Syncthing will be re-paused on first successful poll.");
         }
         catch (Exception ex)
         {
@@ -1889,33 +1981,190 @@ internal sealed class TrayApplicationContext : ApplicationContext
     }
 
     /// <summary>
-    /// Called from the poll-tick once Syncthing is confirmed reachable. Re-POSTs
-    /// /rest/system/pause to reconcile Syncthing's runtime state with our sidecar.
-    /// The flag is NOT cleared here on HTTP 200 — the caller does that when the
-    /// NEXT poll confirms `allPaused == true`. Firing multiple times while waiting
-    /// for confirmation is safe (pause is idempotent server-side).
+    /// Atomically flips folder/device pause state in Syncthing's config.
+    /// GET /rest/config -> mutate JSON paused fields -> PUT /rest/config.
+    /// One round-trip = one Syncthing config-reload, regardless of how many
+    /// folders/devices change.
+    ///
+    /// Why bulk-PUT instead of N PATCH /rest/config/folders/&lt;id&gt; calls:
+    /// rapid sequential PATCHes against Syncthing v2 fail (HTTP 000 / no
+    /// response) because each PATCH triggers a config-reload that briefly
+    /// closes the REST listener — subsequent PATCHes hit the closed window.
+    /// PUT-the-whole-config is a single reload.
+    ///
+    /// IDs filter: pass null to flip every folder/device. Pass a HashSet to
+    /// flip only matching IDs (used by MenuResume to restore exactly what
+    /// MenuPause flipped, preserving user-intentional folder pauses).
+    ///
+    /// Returns the lists of IDs that *actually changed* (were not already in
+    /// the target state). MenuPause uses this to snapshot what to restore on
+    /// MenuResume. If nothing would change, the PUT is skipped to avoid the
+    /// config-reload churn for a no-op.
+    ///
+    /// Caller threading: pool thread only (HTTP synchronous). State writes
+    /// must marshal to UI thread.
+    /// </summary>
+    private (List<string> FlippedFolders, List<string> FlippedDevices, bool Ok) ApplyConfigPause(
+        bool targetPaused,
+        HashSet<string>? folderIdFilter = null,
+        HashSet<string>? deviceIdFilter = null)
+    {
+        var flippedFolders = new List<string>();
+        var flippedDevices = new List<string>();
+        if (string.IsNullOrEmpty(_config.ApiKey))
+        {
+            TrayLog.Warn("ApplyConfigPause: no API key configured.");
+            return (flippedFolders, flippedDevices, false);
+        }
+        try
+        {
+            // 8s GET — slow disk + large config still under HttpClient's 5s default
+            // could spuriously fail on some users, so override.
+            var (gs, body) = _api.Get("/rest/config", timeoutMs: 8000);
+            if (gs != 200 || string.IsNullOrEmpty(body))
+            {
+                TrayLog.Warn($"ApplyConfigPause: GET /rest/config returned HTTP {gs}.");
+                return (flippedFolders, flippedDevices, false);
+            }
+
+            JsonNode? root = JsonNode.Parse(body);
+            if (root is null)
+            {
+                TrayLog.Warn("ApplyConfigPause: failed to parse /rest/config body.");
+                return (flippedFolders, flippedDevices, false);
+            }
+
+            if (root["folders"] is JsonArray folders)
+            {
+                foreach (JsonNode? f in folders)
+                {
+                    if (f is null) continue;
+                    string id = f["id"]?.GetValue<string>() ?? string.Empty;
+                    if (id.Length == 0) continue;
+                    if (folderIdFilter is not null && !folderIdFilter.Contains(id)) continue;
+                    bool current = (f["paused"] as JsonValue)?.GetValue<bool>() ?? false;
+                    if (current == targetPaused) continue;
+                    f["paused"] = targetPaused;
+                    flippedFolders.Add(id);
+                }
+            }
+
+            if (root["devices"] is JsonArray devices)
+            {
+                foreach (JsonNode? d in devices)
+                {
+                    if (d is null) continue;
+                    string id = d["deviceID"]?.GetValue<string>() ?? string.Empty;
+                    if (id.Length == 0) continue;
+                    if (deviceIdFilter is not null && !deviceIdFilter.Contains(id)) continue;
+                    bool current = (d["paused"] as JsonValue)?.GetValue<bool>() ?? false;
+                    if (current == targetPaused) continue;
+                    d["paused"] = targetPaused;
+                    flippedDevices.Add(id);
+                }
+            }
+
+            if (flippedFolders.Count == 0 && flippedDevices.Count == 0)
+            {
+                // No-op: config is already in the target state. Skip the PUT to avoid
+                // unnecessary config-reload churn (and the brief REST-listener close).
+                TrayLog.Info($"ApplyConfigPause: already at targetPaused={targetPaused}, no PUT needed.");
+                return (flippedFolders, flippedDevices, true);
+            }
+
+            string newBody = root.ToJsonString();
+            // 30s ceiling for PUT — Syncthing reapplies config + may rebuild folder
+            // ignore caches; on machines with many folders this can take seconds.
+            var (ps, _) = _api.Put("/rest/config", newBody, timeoutMs: 30_000);
+            if (ps != 200)
+            {
+                TrayLog.Warn($"ApplyConfigPause: PUT /rest/config returned HTTP {ps}.");
+                return (flippedFolders, flippedDevices, false);
+            }
+            TrayLog.Info($"ApplyConfigPause: targetPaused={targetPaused}; flipped {flippedFolders.Count} folder(s), {flippedDevices.Count} device(s).");
+            return (flippedFolders, flippedDevices, true);
+        }
+        catch (Exception ex)
+        {
+            TrayLog.Warn($"ApplyConfigPause: {ex.Message}");
+            return (flippedFolders, flippedDevices, false);
+        }
+    }
+
+    /// <summary>
+    /// Called from the poll-tick once Syncthing is confirmed reachable. Re-applies
+    /// our pause via ApplyConfigPause (config-level), so it survives daemon restart
+    /// even on Syncthing v2 where config is the source of truth for paused state.
+    ///
+    /// Uses the snapshot of IDs the tray paused (so we don't unpause user-intentional
+    /// pauses across reapply cycles). Empty snapshot = legacy v2 pause.dat (pre-v2.2.39)
+    /// or fresh state — fall back to "pause every currently-active folder/device" so
+    /// the user's intent ("pause everything that was syncing when I clicked Pause")
+    /// is preserved.
+    ///
+    /// On success, this clears _pauseNeedsReapply immediately — the PUT response means
+    /// the config IS applied (no need for a second poll to confirm).
     /// </summary>
     private void ReapplyInheritedPause()
     {
         if (!_pauseNeedsReapply) return;
+        // Race guard (v2.2.39): if a user-initiated MenuResume already cleared
+        // _paused while a daemon-restart-driven re-arm was in flight from poll
+        // Section 1.5, honor the user's intent and bail. Without this, the
+        // legacy-fallback path (empty snapshot + null filter) would re-pause
+        // every just-resumed folder and device.
+        if (!_paused)
+        {
+            _pauseNeedsReapply = false;
+            TrayLog.Info("ReapplyInheritedPause: skipped, _paused=false (concurrent resume); flag cleared.");
+            return;
+        }
         if (string.IsNullOrEmpty(_config.ApiKey))
         {
             // Can't act without an API key. Leave the flag set so a later key
             // entry + poll cycle can still reconcile.
             return;
         }
-        try
+
+        HashSet<string>? folderFilter = null;
+        HashSet<string>? deviceFilter = null;
+        bool haveSnapshot;
+        lock (_pauseSnapshotLock)
         {
-            var (status, _) = _api.Post("/rest/system/pause");
-            if (status == 200)
-                TrayLog.Info("ReapplyInheritedPause: POST 200 — awaiting next-poll confirmation.");
-            else
-                TrayLog.Warn($"ReapplyInheritedPause: HTTP {status} — will retry next poll.");
+            haveSnapshot = _trayPausedFolderIds.Count > 0 || _trayPausedDeviceIds.Count > 0;
+            if (haveSnapshot)
+            {
+                folderFilter = new HashSet<string>(_trayPausedFolderIds, StringComparer.Ordinal);
+                deviceFilter = new HashSet<string>(_trayPausedDeviceIds, StringComparer.Ordinal);
+            }
         }
-        catch (Exception ex)
+
+        var (flippedFolders, flippedDevices, ok) = ApplyConfigPause(
+            targetPaused: true,
+            folderIdFilter: folderFilter,
+            deviceIdFilter: deviceFilter);
+
+        if (!ok)
         {
-            TrayLog.Warn($"ReapplyInheritedPause: {ex.Message}");
+            TrayLog.Warn("ReapplyInheritedPause: ApplyConfigPause failed; will retry next poll.");
+            return;
         }
+
+        if (!haveSnapshot && (flippedFolders.Count > 0 || flippedDevices.Count > 0))
+        {
+            // Legacy fallback path took effect — record what we just flipped so the
+            // resume path can restore exactly that set, and persist the v3 schema.
+            lock (_pauseSnapshotLock)
+            {
+                _trayPausedFolderIds = flippedFolders;
+                _trayPausedDeviceIds = flippedDevices;
+            }
+            // Persist the upgraded snapshot (best-effort — UI-thread file IO).
+            RunOnUi(() => { if (!_disposed) PersistPauseState(); });
+        }
+
+        _pauseNeedsReapply = false;
+        TrayLog.Info("ReapplyInheritedPause: pause re-applied via PUT /rest/config; flag cleared.");
     }
 
     private void MenuStart()

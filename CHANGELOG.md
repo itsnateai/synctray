@@ -4,6 +4,18 @@
 
 All notable changes to SyncthingTray are documented here.
 
+## v2.2.39 — 2026-05-07
+
+### Bug fixes
+- **Pause/Resume now correctly handle folder-level pause state.** On Syncthing v2, folders carry a persisted `paused` flag in `/rest/config/folders` independent of the device-level pause toggled by `POST /rest/system/pause`. If anything in your setup put folders into config-level pause (e.g. clicking "Pause" on a folder card in the Syncthing web UI), SyncthingTray's "Resume Syncing" would call `POST /rest/system/resume`, get HTTP 200 back, show the "Syncing resumed" OSD, and leave the web UI showing every folder still paused — because that endpoint only resumes devices, not folders. The asymmetry effectively wedged sync. SyncthingTray now applies pause/resume by reading `/rest/config`, mutating the `paused` field on every folder and device, and `PUT`ing the config back atomically — one round-trip, both axes covered, version-independent (works on Syncthing v1 and v2). The legacy `/rest/system/pause` and `/rest/system/resume` endpoints are no longer called.
+- **User-intentional folder pauses are preserved across tray pause/resume cycles.** If you have a folder paused on purpose (kept off until later) and then click "Pause Syncing" in the tray, the new pause flow snapshots which folders/devices the tray itself flipped to paused. On resume, only that snapshot is restored — folders you had already paused stay paused. The snapshot persists in `pause.dat` (schema v3) so it survives tray restart, daemon restart, and reboot.
+- **Wedged-on-upgrade users self-heal on first Resume click.** If you were already in the wedged state (folders paused-in-config left over from any earlier session), the first time you click "Resume Syncing" after upgrading the tray detects the missing snapshot and falls back to "unpause every paused folder and device" — your config is reconciled in one click. Subsequent pause/resume cycles use the new snapshot path.
+
+### Internals
+- `ApplyConfigPause` helper centralises the GET-mutate-PUT flip; `MenuPause`, `MenuResume`, `ReapplyInheritedPause`, and the network auto-pause/auto-resume paths all route through it. Skipping the PUT when no field would change avoids unnecessary config-reload churn.
+- `pause.dat` schema bumped to v3 with appended snapshot lines (folder-IDs and device-IDs, pipe-separated). Older `pause.dat` files (v2 schema) load fine — empty snapshot triggers the unwedge fallback path described above.
+- The post-PUT response is treated as authoritative confirmation (`PUT /rest/config` returns 200 only after Syncthing's config save completes), so `_pauseNeedsReapply` clears immediately on success rather than waiting for a second-poll handshake.
+
 ## v2.2.38 — 2026-05-01
 
 ### Reliability
