@@ -1020,57 +1020,60 @@ internal sealed class TrayApplicationContext : ApplicationContext
                     _connectedCount = connCount;
                     _totalDevices = deviceCount;
 
-                    if (deviceCount > 0)
+                    // Inherited-pause reapply runs regardless of deviceCount (zero-device
+                    // users — local-only Syncthing — would otherwise loop on
+                    // _pauseNeedsReapply forever; v2.2.40 hoist).
+                    //
+                    // v2.2.40: ApplyConfigPause's PUT response is authoritative (Syncthing's
+                    // queue model: 200 fires only after cfg.Save() completes). ReapplyInheritedPause
+                    // self-clears the flag on PUT 200. The `if (allPaused) clear flag` confirm-
+                    // handshake below remains as a fallback for the rare case where Syncthing's
+                    // /rest/system/connections snapshot races our PUT and the flag wasn't cleared
+                    // by ReapplyInheritedPause's own success path (e.g., HTTP timeout).
+                    if (_pauseNeedsReapply)
                     {
-                        // First poll after inheriting pause from pause.dat: re-apply
-                        // to Syncthing before reconciling local state. Confirm-handshake:
-                        // stay in this branch until Syncthing actually reports
-                        // `allPaused == true`. The prior shape of this code cleared
-                        // the reapply flag on the POST's 200 response, but the next
-                        // poll could still see `allPaused == false` (stale snapshot
-                        // that was fetched before the POST took effect, admin-resumed
-                        // concurrently, or silent rejection) — hitting the else branch
-                        // and silently dropping the inherited pause.
-                        if (_pauseNeedsReapply)
+                        if (deviceCount > 0 && allPaused)
                         {
-                            if (allPaused)
-                            {
-                                // Syncthing has confirmed the reapply; safe to drop the flag.
-                                _pauseNeedsReapply = false;
-                                TrayLog.Info("Inherited pause confirmed by Syncthing; reapply flag cleared.");
-                            }
-                            else
-                            {
-                                // Re-POST and stay in this branch. ReapplyInheritedPause is
-                                // idempotent server-side; fire again on every unconfirmed tick.
-                                ReapplyInheritedPause();
-                            }
-                            // Either way, skip the external-resume branch this tick.
+                            // Fallback path: ReapplyInheritedPause didn't clear the flag (PUT
+                            // failure or transport error). The connections snapshot now confirms
+                            // Syncthing is paused; safe to drop the flag.
+                            _pauseNeedsReapply = false;
+                            TrayLog.Info("Inherited pause confirmed by Syncthing; reapply flag cleared (handshake fallback).");
                         }
                         else
                         {
-                            // _paused read-modify-write + ClearPauseState (which touches
-                            // _pauseTimer, a WinForms UI-affine timer) must happen on
-                            // the UI thread — this branch runs from PollSyncStatusCore
-                            // via `await Task.Run(...)` which drops the sync context.
-                            bool pausedNow = allPaused;
-                            RunOnUi(() =>
-                            {
-                                if (_disposed) return;
-                                bool wasPaused = _paused;
-                                _paused = pausedNow;
-                                // External resume (user hit Resume in Web UI, or our deadline
-                                // already fired and Syncthing reflects it): drop our timer +
-                                // sidecar so a stale deadline doesn't double-fire MenuResume().
-                                // Logged at INFO so a silent state transition is grep-able in
-                                // tray.log when investigating "sync kicked back on" reports.
-                                if (wasPaused && !_paused)
-                                {
-                                    TrayLog.Info("External resume detected (Syncthing reports allPaused=false while we held a pause) — clearing local pause state.");
-                                    ClearPauseState();
-                                }
-                            });
+                            // Fire ReapplyInheritedPause. Idempotent — ApplyConfigPause skips the
+                            // PUT when no field would change. Self-clears the flag on success.
+                            // Runs even with deviceCount==0 because the PUT covers folder pause too.
+                            ReapplyInheritedPause();
                         }
+                    }
+                    else if (deviceCount > 0)
+                    {
+                        // External-resume detection still requires per-device pause data from
+                        // /rest/system/connections, so it stays gated on deviceCount > 0.
+                        //
+                        // _paused read-modify-write + ClearPauseState (which touches
+                        // _pauseTimer, a WinForms UI-affine timer) must happen on
+                        // the UI thread — this branch runs from PollSyncStatusCore
+                        // via `await Task.Run(...)` which drops the sync context.
+                        bool pausedNow = allPaused;
+                        RunOnUi(() =>
+                        {
+                            if (_disposed) return;
+                            bool wasPaused = _paused;
+                            _paused = pausedNow;
+                            // External resume (user hit Resume in Web UI, or our deadline
+                            // already fired and Syncthing reflects it): drop our timer +
+                            // sidecar so a stale deadline doesn't double-fire MenuResume().
+                            // Logged at INFO so a silent state transition is grep-able in
+                            // tray.log when investigating "sync kicked back on" reports.
+                            if (wasPaused && !_paused)
+                            {
+                                TrayLog.Info("External resume detected (Syncthing reports allPaused=false while we held a pause) — clearing local pause state.");
+                                ClearPauseState();
+                            }
+                        });
                     }
 
                     // Prune stale device entries — if a device was removed from
@@ -1213,17 +1216,39 @@ internal sealed class TrayApplicationContext : ApplicationContext
                     else if (cat != 0 && _autoPaused)
                     {
                         // v2.2.39: restore exactly the IDs we flipped on auto-pause.
+                        // v2.2.40: bail if snapshot is empty. Manual MenuResume's "flip everything
+                        // currently paused" fallback is appropriate as a user-initiated unwedge —
+                        // but auto-resume firing the same fallback silently would unpause folders
+                        // the user had intentionally paused before NetworkAutoPause kicked in. Auto
+                        // is silent + automatic, so it must not over-reach. User can manually
+                        // Resume Syncing if they want to clear inherited pause-state.
                         HashSet<string>? folderFilter = null;
                         HashSet<string>? deviceFilter = null;
+                        bool haveSnapshot;
                         lock (_pauseSnapshotLock)
                         {
-                            if (_trayPausedFolderIds.Count > 0 || _trayPausedDeviceIds.Count > 0)
+                            haveSnapshot = _trayPausedFolderIds.Count > 0 || _trayPausedDeviceIds.Count > 0;
+                            if (haveSnapshot)
                             {
                                 folderFilter = new HashSet<string>(_trayPausedFolderIds, StringComparer.Ordinal);
                                 deviceFilter = new HashSet<string>(_trayPausedDeviceIds, StringComparer.Ordinal);
                             }
                         }
-                        var (_, _, ok) = ApplyConfigPause(targetPaused: false, folderIdFilter: folderFilter, deviceIdFilter: deviceFilter);
+                        // No snapshot to restore — leave _autoPaused in place so a future
+                        // public-network transition won't try to re-pause on top, and let
+                        // the user click Resume Syncing to explicitly unwedge. Fall through
+                        // to update _lastNetworkCategory below; ok stays false so we won't
+                        // touch state.
+                        bool ok;
+                        if (!haveSnapshot)
+                        {
+                            TrayLog.Info("Auto-resume: snapshot empty; skipping silent unpause-everything (user must manually resume).");
+                            ok = false;
+                        }
+                        else
+                        {
+                            (_, _, ok) = ApplyConfigPause(targetPaused: false, folderIdFilter: folderFilter, deviceIdFilter: deviceFilter);
+                        }
                         if (ok)
                         {
                             RunOnUi(() =>
@@ -1240,8 +1265,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
                                 ShowOsd("Auto-resumed: private network detected", 3000);
                             });
                         }
-                        else
+                        else if (haveSnapshot)
                         {
+                            // Genuine ApplyConfigPause failure (haveSnapshot==true means we
+                            // intended to flip but the PUT or GET errored). Differentiated
+                            // from the empty-snapshot skip above (no OSD, just info-log).
                             ShowOsd("Auto-resume FAILED — still paused", 5000);
                             TrayLog.Warn("Auto-resume: ApplyConfigPause failed.");
                         }
@@ -1838,11 +1866,21 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 deviceLine = string.Join('|', _trayPausedDeviceIds);
             }
             var body = $"{_activePauseMinutes}\n{ticksLine}\n{autoLine}\n{PauseStateSchemaV3}\n{folderLine}\n{deviceLine}";
-            File.WriteAllText(_pauseStatePath, body);
+            // v2.2.40: atomic write — write to .tmp, then File.Replace (or File.Move when
+            // no destination exists). A crash mid-write would otherwise truncate pause.dat
+            // and the next RestorePauseStateOnStartup would delete it, losing the snapshot.
+            var tempPath = _pauseStatePath + ".tmp";
+            File.WriteAllText(tempPath, body);
+            if (File.Exists(_pauseStatePath))
+                File.Replace(tempPath, _pauseStatePath, destinationBackupFileName: null);
+            else
+                File.Move(tempPath, _pauseStatePath);
         }
         catch (Exception ex)
         {
             TrayLog.Warn($"PersistPauseState: {ex.Message}");
+            // Best-effort cleanup of orphan tmp on any failure path.
+            try { var t = _pauseStatePath + ".tmp"; if (File.Exists(t)) File.Delete(t); } catch { }
         }
     }
 
@@ -1951,20 +1989,27 @@ internal sealed class TrayApplicationContext : ApplicationContext
             // pause.dat (pre-v2.2.39) — leave snapshots empty; ReapplyInheritedPause +
             // MenuResume will fall back to "flip everything" which auto-unwedges users
             // upgrading from v2.2.38 with config-paused folders.
+            //
+            // v2.2.40 hardening: Trim() on each parsed ID strips a trailing \r if a user
+            // hand-edited pause.dat in Notepad (CRLF line endings) — without this, the
+            // last id on each line would have \r appended and never match in folderIdFilter
+            // lookups, silently leaving that folder paused on resume.
             int snapshotFolders = 0, snapshotDevices = 0;
             if (lines.Length >= 4 && lines[3].Trim() == PauseStateSchemaV3)
             {
                 if (lines.Length >= 5 && lines[4].Length > 0)
                 {
-                    var ids = lines[4].Split('|', StringSplitOptions.RemoveEmptyEntries);
-                    lock (_pauseSnapshotLock) { _trayPausedFolderIds = new List<string>(ids); }
-                    snapshotFolders = ids.Length;
+                    var ids = lines[4].Split('|', StringSplitOptions.RemoveEmptyEntries)
+                        .Select(s => s.Trim()).Where(s => s.Length > 0).ToList();
+                    lock (_pauseSnapshotLock) { _trayPausedFolderIds = ids; }
+                    snapshotFolders = ids.Count;
                 }
                 if (lines.Length >= 6 && lines[5].Length > 0)
                 {
-                    var ids = lines[5].Split('|', StringSplitOptions.RemoveEmptyEntries);
-                    lock (_pauseSnapshotLock) { _trayPausedDeviceIds = new List<string>(ids); }
-                    snapshotDevices = ids.Length;
+                    var ids = lines[5].Split('|', StringSplitOptions.RemoveEmptyEntries)
+                        .Select(s => s.Trim()).Where(s => s.Length > 0).ToList();
+                    lock (_pauseSnapshotLock) { _trayPausedDeviceIds = ids; }
+                    snapshotDevices = ids.Count;
                 }
             }
 

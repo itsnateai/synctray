@@ -4,6 +4,20 @@
 
 All notable changes to SyncthingTray are documented here.
 
+## v2.2.40 — 2026-05-07
+
+### Bug fixes (post-v2.2.39 multi-agent audit)
+- **Zero-device users no longer loop on `_pauseNeedsReapply` forever.** If you run Syncthing locally with no remote devices (local-only folders), v2.2.39's reapply path was gated behind `if (deviceCount > 0)` and skipped on every poll — `_pauseNeedsReapply` was set in `RestorePauseStateOnStartup` but never cleared, leaving the in-memory flag stuck. Hoisted the reapply branch outside the deviceCount gate so the PUT-and-self-clear path runs regardless of remote-device presence. The external-resume detection (which inherently needs per-device pause state) stays gated.
+- **`pause.dat` writes are now atomic.** Replaced `File.WriteAllText` with write-temp-then-`File.Replace` so a crash, BSOD, or power loss mid-write can't truncate the snapshot file. A truncated `pause.dat` would otherwise be deleted by `RestorePauseStateOnStartup`'s malformed-file handler on next launch, losing the snapshot and forcing the unwedge fallback.
+- **Auto-resume on network change no longer silently un-pauses everything when the snapshot is empty.** v2.2.39's network-auto-resume path inherited the same "flip every paused entry" fallback as `MenuResume` — which is correct for a user-initiated unwedge but inappropriate for a silent automatic action that could unpause folders the user intentionally paused before NetworkAutoPause kicked in. Auto-resume now bails (info-log, no OSD) when the snapshot is empty and lets the user manually resume.
+
+### Hardening
+- **`pause.dat` reader trims each ID** before populating the snapshot lists — defends against a `\r` trailing the last ID on a line if a user hand-edited the file in Notepad (CRLF endings would otherwise leave one folder permanently paused on resume because the lookup hash wouldn't match).
+- Confirm-handshake (`if (allPaused) clear flag`) in the connections poll is now explicitly documented as a fallback for the rare case where `ReapplyInheritedPause` doesn't self-clear via PUT response (e.g., HTTP timeout); v2.2.39 CHANGELOG drift fixed.
+
+### Known limitations (unchanged from v2.2.39, surfacing for transparency)
+- `PUT /rest/config` is not optimistically-concurrent. If you edit Syncthing config in the web UI at the exact moment the tray is applying a pause/resume, your edits can be silently overwritten. The window is small (sub-second on localhost). Optimistic concurrency via Syncthing's config `version` field is on the v2.2.41+ roadmap.
+
 ## v2.2.39 — 2026-05-07
 
 ### Bug fixes
