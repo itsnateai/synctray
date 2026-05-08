@@ -4,6 +4,13 @@
 
 All notable changes to SyncthingTray are documented here.
 
+## v2.3.10 — 2026-05-07
+
+### Bug fixes (v2.3.9 verifier round — 3 convergent gaps closed)
+- **`VerifyPauseStateFile` now bounds-checks `ticks` upper limit** (mirrors `RestorePauseStateOnStartup`'s own guard). v2.3.9's verify accepted `ticks > DateTime.MaxValue.Ticks` but restore rejected them; a tampered/corrupt pause.dat with an absurd tick value would pass migration verify, get the legacy deleted, then `RestorePauseStateOnStartup` would delete the new file for being malformed — net snapshot loss. Verify now rejects identically to restore.
+- **`_devicePaused` and `_knownDevices` converted to `ConcurrentDictionary`.** Pool-thread connections-poll mutates them (write + prune) while UI-thread BuildMenu / MenuResumeAllDevices enumerates them; plain `Dictionary` enumeration during concurrent mutation throws `InvalidOperationException`. The race was pre-existing but newly amplified by v2.3.9's `MenuResumeAllDevices` enumeration site. `Remove(id)` calls migrated to `TryRemove(id, out _)`.
+- **0-byte legacy `pause.dat` is now deleted instead of looped on.** Empty legacy files would post-copy-verify reject as empty, the new copy got discarded, the legacy stayed untouched, and the same migration cycle ran on every launch with no progress. Now: detect empty legacy at start of migration, delete it (no state to migrate), mark success.
+
 ## v2.3.9 — 2026-05-07
 
 ### Bug fixes (v2.3.8 verifier rejection — 6 gaps closed)

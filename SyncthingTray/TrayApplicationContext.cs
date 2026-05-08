@@ -33,12 +33,14 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private bool _intentionalStop;
     private string _syncStatus = "unknown";
     private string _syncDetail = string.Empty;
-    private readonly Dictionary<string, bool> _knownDevices = new();
-    // v2.3.0: per-device paused state, populated free-of-charge from each
-    // /rest/system/connections poll. Used by the Devices submenu and the Synced
-    // Folders header coloring. Updated under the same UI/poll thread contract as
-    // _knownDevices (UI thread reads in BuildMenu; pool thread writes on poll-tick).
-    private readonly Dictionary<string, bool> _devicePaused = new();
+    // v2.3.10: ConcurrentDictionary so the pool-thread connections-poll prune
+    // loop and the UI-thread BuildMenu / MenuResumeAll reads can run without an
+    // explicit lock. Plain Dictionary enumeration during concurrent mutation
+    // throws InvalidOperationException; cross-verifier consensus flagged the
+    // race as real (and newly amplified by the v2.3.9 MenuResumeAllDevices
+    // enumeration site).
+    private readonly ConcurrentDictionary<string, bool> _knownDevices = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<string, bool> _devicePaused = new(StringComparer.Ordinal);
     private bool _devicesPollSeeded;
     private int _lastConflictCount;
     private bool _deviceApiFailureNotified;
@@ -1546,9 +1548,9 @@ internal sealed class TrayApplicationContext : ApplicationContext
                     // from _knownDevices to prevent unbounded growth.
                     var seenDevices = new HashSet<string>(connections.EnumerateObject().Select(p => p.Name));
                     foreach (var id in _knownDevices.Keys.Where(k => !seenDevices.Contains(k)).ToList())
-                        _knownDevices.Remove(id);
+                        _knownDevices.TryRemove(id, out _);
                     foreach (var id in _devicePaused.Keys.Where(k => !seenDevices.Contains(k)).ToList())
-                        _devicePaused.Remove(id);
+                        _devicePaused.TryRemove(id, out _);
                 }
             }
             else
@@ -2373,6 +2375,23 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 migrationSucceededOrNotNeeded = true;
                 return;
             }
+            // v2.3.10: 0-byte legacy file would otherwise loop every launch
+            // (post-copy verify rejects empty, copy gets discarded, legacy
+            // re-tried next launch). Treat empty as garbage and delete it.
+            try
+            {
+                if (new FileInfo(legacyPath).Length == 0)
+                {
+                    File.Delete(legacyPath);
+                    TrayLog.Info($"pause.dat: deleted 0-byte legacy file at {legacyPath} (no state to migrate).");
+                    migrationSucceededOrNotNeeded = true;
+                    return;
+                }
+            }
+            catch (Exception ex)
+            {
+                TrayLog.Warn($"pause.dat: 0-byte check on legacy failed: {ex.Message} (proceeding with normal migration path).");
+            }
             // Pre-existing dest from a prior run — verify before trusting it
             // over the legacy file. A partial v2.3.8 copy left at _pauseStatePath
             // would otherwise win on the next launch and the user's real pause
@@ -2544,9 +2563,15 @@ internal sealed class TrayApplicationContext : ApplicationContext
             // For untimed (minutes == 0), line 2 may be empty.
             if (minutes > 0)
             {
-                if (lines.Length < 2 || !long.TryParse(lines[1], out var ticks) || ticks < 0)
+                // v2.3.10: also bounds-check ticks against DateTime.MaxValue.Ticks
+                // (mirror of the same guard in RestorePauseStateOnStartup). Without
+                // this, a tampered pause.dat with ticks > MaxValue passes verify but
+                // RestorePauseStateOnStartup deletes it for being malformed —
+                // verify-vs-restore asymmetry that would silently destroy the
+                // migrated snapshot.
+                if (lines.Length < 2 || !long.TryParse(lines[1], out var ticks) || ticks < 0 || ticks > DateTime.MaxValue.Ticks)
                 {
-                    error = "timed pause but line 2 not parseable as ticks";
+                    error = "timed pause but line 2 not parseable as ticks (or out of range)";
                     return false;
                 }
             }
