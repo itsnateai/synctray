@@ -257,39 +257,42 @@ internal sealed class TrayApplicationContext : ApplicationContext
         // produced "file not found" failed-items in the web UI. Per-machine
         // tray state has no business being inside a synced folder regardless.
         // tray.log already lives in this directory; just colocate.
-        var stateDir = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "SyncthingTray");
+        //
+        // v2.3.8: harden the resolution and migration:
+        //   - Fall back chain: SpecialFolder → %USERPROFILE%\AppData\Local → appDir.
+        //     Environment.GetFolderPath returns "" on stripped/sandboxed sessions
+        //     (services, certain corp-locked profiles); Path.Combine("", x) returns
+        //     a relative path that Directory.CreateDirectory creates under cwd
+        //     (often System32 for auto-started apps) — silent state leak.
+        //   - Migration uses Copy+verify+Delete instead of File.Move:
+        //     File.Move fails atomically with no fallback if Syncthing has the
+        //     legacy file open (hashing) at ctor time; Copy can stream-while-locked
+        //     more permissively. Retry-with-backoff on IOException covers the
+        //     window where Syncthing's lock is released within ~3s of ctor entry.
+        //     Verify (size cap + first-line int parse) before Delete so a partial
+        //     cross-volume Copy can't leave a corrupt new file that the next
+        //     RestorePauseStateOnStartup deletes for being "malformed", losing
+        //     the pause snapshot silently.
+        string localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        if (string.IsNullOrEmpty(localAppData))
+        {
+            var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            if (!string.IsNullOrEmpty(userProfile))
+                localAppData = Path.Combine(userProfile, "AppData", "Local");
+        }
+        if (string.IsNullOrEmpty(localAppData))
+        {
+            // Last-resort fallback: keep state next to exe (legacy behavior).
+            // Better than letting Path.Combine("", "SyncthingTray") create a
+            // relative path under whatever cwd the OS chose.
+            localAppData = appDir;
+            TrayLog.Warn("LOCALAPPDATA + USERPROFILE both empty; pause.dat falling back to install dir (legacy behavior — re-bug for synced-install users, accepted because alternative is silent path leak under cwd).");
+        }
+        var stateDir = Path.Combine(localAppData, "SyncthingTray");
         try { Directory.CreateDirectory(stateDir); }
         catch (Exception ex) { TrayLog.Warn($"Could not create state dir {stateDir}: {ex.Message}"); }
         _pauseStatePath = Path.Combine(stateDir, "pause.dat");
-        // Migrate any leftover pause.dat from the legacy appDir location. If both
-        // exist, prefer the new path (newer state) and just delete the legacy file
-        // — leaving it behind would let Syncthing keep trying to sync it forever.
-        try
-        {
-            var legacyPath = Path.Combine(appDir, "pause.dat");
-            if (File.Exists(legacyPath))
-            {
-                if (!File.Exists(_pauseStatePath))
-                {
-                    File.Move(legacyPath, _pauseStatePath);
-                    TrayLog.Info($"pause.dat: migrated {legacyPath} -> {_pauseStatePath}.");
-                }
-                else
-                {
-                    File.Delete(legacyPath);
-                    TrayLog.Info($"pause.dat: deleted legacy file at {legacyPath} (newer state already present at {_pauseStatePath}).");
-                }
-            }
-            // Also clean up any leftover .tmp / .bak from the old location.
-            foreach (var stale in new[] { Path.Combine(appDir, "pause.dat.tmp"), Path.Combine(appDir, "pause.dat.bak") })
-                if (File.Exists(stale)) try { File.Delete(stale); } catch { }
-        }
-        catch (Exception ex)
-        {
-            TrayLog.Warn($"pause.dat legacy-path migration: {ex.Message}");
-        }
+        TryMigratePauseDat(appDir);
         RestorePauseStateOnStartup();
 
         // Startup delay — use a timer so the message pump stays alive
@@ -667,8 +670,14 @@ internal sealed class TrayApplicationContext : ApplicationContext
         // v2.3.7: quick "Resume All Folders" action for users who paused several
         // folders individually. Only shown when at least one folder is paused
         // (no point cluttering the menu when there's nothing to resume).
+        // v2.3.8: gated on !_paused — when global pause is active, "Resume Syncing"
+        // is the right action (restores the snapshot atomically). Showing both
+        // simultaneously confused users (cross-verifier consensus): clicking
+        // "Resume All Folders" while _paused=true would partially un-pause
+        // folders without clearing _paused or the global snapshot, leaving the
+        // tray in an inconsistent state where the icon still shows pause.
         bool anyFolderPaused = _folders.Any(f => f.Paused);
-        if (anyFolderPaused && !string.IsNullOrEmpty(_config.ApiKey))
+        if (anyFolderPaused && !_paused && !string.IsNullOrEmpty(_config.ApiKey))
             menu.Items.Add("Resume All Folders", null, (_, _) => MenuResumeAllFolders());
         menu.Items.Add(_config.WebUI, null, (_, _) => OpenWebUI());
 
@@ -2258,6 +2267,120 @@ internal sealed class TrayApplicationContext : ApplicationContext
     // hex (e.g. "agwci-hd37s") and device IDs are dash-separated base32 — neither
     // can contain '|'.
     private const string PauseStateSchemaV3 = "v3";
+
+    /// <summary>
+    /// v2.3.8 — migrate pause.dat from the legacy install-dir location to the
+    /// AppData state dir. Copy+verify+Delete (instead of File.Move) so a
+    /// partial cross-volume copy or a Syncthing-held read lock can't leave the
+    /// state in an unrecoverable in-between. Retries File.Copy a few times
+    /// with backoff for the common case where Syncthing is hashing the legacy
+    /// file at the moment we entered the ctor — the lock typically clears
+    /// within ~1-2 seconds.
+    /// </summary>
+    private void TryMigratePauseDat(string appDir)
+    {
+        try
+        {
+            var legacyPath = Path.Combine(appDir, "pause.dat");
+            if (File.Exists(legacyPath))
+            {
+                if (File.Exists(_pauseStatePath))
+                {
+                    // New path already populated (user previously ran v2.3.7+).
+                    // Just delete the legacy so Syncthing stops hashing it.
+                    try
+                    {
+                        File.Delete(legacyPath);
+                        TrayLog.Info($"pause.dat: deleted legacy file at {legacyPath} (newer state already present at {_pauseStatePath}).");
+                    }
+                    catch (Exception ex)
+                    {
+                        TrayLog.Warn($"pause.dat: legacy delete failed: {ex.Message} (will retry next launch).");
+                    }
+                }
+                else
+                {
+                    Exception? lastErr = null;
+                    bool copied = false;
+                    for (int attempt = 0; attempt < 5; attempt++)
+                    {
+                        try
+                        {
+                            File.Copy(legacyPath, _pauseStatePath, overwrite: false);
+                            copied = true;
+                            lastErr = null;
+                            break;
+                        }
+                        catch (IOException ex) when (attempt < 4)
+                        {
+                            lastErr = ex;
+                            // Backoff: 0.5, 1.0, 1.5, 2.0 seconds between attempts.
+                            // Total worst-case delay ~5s during ctor, acceptable
+                            // for a once-ever migration.
+                            Thread.Sleep(500 * (attempt + 1));
+                        }
+                    }
+                    if (!copied)
+                    {
+                        TrayLog.Warn($"pause.dat: migration Copy failed after retries (last error: {lastErr?.Message}); legacy file left intact for retry next launch.");
+                        return;
+                    }
+                    // Verify the copy is parseable before deleting the legacy.
+                    bool verified;
+                    try
+                    {
+                        var info = new FileInfo(_pauseStatePath);
+                        if (info.Length > PauseStateMaxBytes)
+                            throw new InvalidDataException($"copied file is {info.Length} bytes (cap {PauseStateMaxBytes})");
+                        using var stream = File.OpenRead(_pauseStatePath);
+                        using var reader = new StreamReader(stream);
+                        var first = reader.ReadLine();
+                        if (string.IsNullOrEmpty(first) || !int.TryParse(first, out _))
+                            throw new InvalidDataException("first line not parseable as int");
+                        verified = true;
+                    }
+                    catch (Exception ex)
+                    {
+                        TrayLog.Warn($"pause.dat: migration verification failed ({ex.Message}); discarding new copy, keeping legacy for retry next launch.");
+                        try { File.Delete(_pauseStatePath); } catch { }
+                        return;
+                    }
+                    if (verified)
+                    {
+                        try
+                        {
+                            File.Delete(legacyPath);
+                            TrayLog.Info($"pause.dat: migrated {legacyPath} -> {_pauseStatePath} (Copy+verify+Delete).");
+                        }
+                        catch (Exception ex)
+                        {
+                            TrayLog.Warn($"pause.dat: copy+verify succeeded but legacy delete failed: {ex.Message}. Both files exist; will resolve next launch.");
+                        }
+                    }
+                }
+            }
+            // Clean up any leftover .tmp / .bak from the legacy location. Warn
+            // (not silent) if Delete fails so lingering files in the synced
+            // folder are visible in tray.log instead of haunting forever.
+            foreach (var stale in new[] { Path.Combine(appDir, "pause.dat.tmp"), Path.Combine(appDir, "pause.dat.bak") })
+            {
+                if (!File.Exists(stale)) continue;
+                try
+                {
+                    File.Delete(stale);
+                    TrayLog.Info($"pause.dat: cleaned up stale {Path.GetFileName(stale)} from legacy location.");
+                }
+                catch (Exception ex)
+                {
+                    TrayLog.Warn($"pause.dat: stale {Path.GetFileName(stale)} cleanup failed: {ex.Message} (will retry next launch).");
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            TrayLog.Warn($"pause.dat migration: outer error: {ex.Message}");
+        }
+    }
 
     private void PersistPauseState()
     {

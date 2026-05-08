@@ -4,6 +4,17 @@
 
 All notable changes to SyncthingTray are documented here.
 
+## v2.3.8 — 2026-05-07
+
+### Bug fixes (post-v2.3.7 verifier round)
+- **`pause.dat` migration is now safe under all the failure modes the audit surfaced.** Before: `File.Move` could fail silently if Syncthing held the legacy file open for hashing at ctor entry, leaving the file in the synced folder forever and defeating v2.3.7's whole purpose. Now: `Copy + verify (size cap + first-line int parse) + Delete legacy on success` instead of `File.Move`, with up to 5 retries × 0.5/1.0/1.5/2.0 second backoff on `IOException` so a transient Syncthing read lock doesn't kill the migration. If verification fails (e.g. a partial cross-volume copy left a corrupt file), the new copy is discarded and the legacy file is kept intact for retry on next launch — `RestorePauseStateOnStartup`'s "delete malformed file" safeguard can no longer destroy the user's pause snapshot mid-migration.
+- **`%LOCALAPPDATA%` resolution has a fallback chain.** `Environment.GetFolderPath(SpecialFolder.LocalApplicationData)` returns `""` on stripped/sandboxed sessions (services, certain corp-locked profiles); `Path.Combine("", "SyncthingTray")` would silently create a relative path under the process cwd (often `System32` for auto-started apps) — state would leak into the wrong directory invisibly. The chain is now `SpecialFolder → %USERPROFILE%\AppData\Local → install dir`, with a warn log on the last-resort fallback so the regression is grep-able if it ever happens.
+- **Stale `.tmp`/`.bak` cleanup logs on failure.** v2.3.7 had an empty `catch { }` swallowing AV-locked deletes; a `.tmp` held open for 50 ms by Defender's first-look scanner would linger in the synced folder forever with zero visibility. Now logs at warn level and retries on subsequent launches.
+- **"Resume All Folders" suppressed when global pause is active.** v2.3.7 showed the item whenever any folder was paused, including when `_paused == true` (global pause held a snapshot). Clicking it would partially un-pause folders without clearing `_paused` or the global snapshot, leaving the tray in an inconsistent state where the icon stayed pause while folders were mixed. Now hidden when `_paused == true` — "Resume Syncing" is the correct action there (restores the snapshot atomically).
+
+### Notes
+- Per-folder/per-device pause requires Syncthing v1.27+ (`/rest/config` API). Older Syncthing builds will see "Failed to pause" / "Failed to resume" OSDs because the PUT endpoint returns HTTP 404. v1.27 was released in 2023; if you're on an older Syncthing, please update.
+
 ## v2.3.7 — 2026-05-07
 
 ### Bug fixes
