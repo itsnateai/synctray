@@ -4,6 +4,12 @@
 
 All notable changes to SyncthingTray are documented here.
 
+## v2.3.6 — 2026-05-07
+
+### New
+- **Partial-pause tray icon.** When some folders/devices are paused but not all (e.g. you globally paused, then resumed one folder), the tray now shows a new `partial.ico` — same blue+white main logo as `pause.ico`, but the small pause mini-icon in the bottom-right has its background recolored from white to red. Black bars stay black. State machine: `sync.ico` when nothing is paused, `partial.ico` when 1..N-1 items are paused (any combination of folders + devices), `pause.ico` when everything is paused (including the existing global `_paused` state).
+- Tray-icon cache key now tracks per-folder and per-device paused counts, so the icon flips immediately when a single folder or device is paused/resumed (previously the cache only invalidated on global `_paused` change). Menu rebuild also fires on these transitions so label states stay in sync.
+
 ## v2.3.5 — 2026-05-07
 
 ### UX

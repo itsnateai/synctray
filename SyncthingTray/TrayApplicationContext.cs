@@ -20,6 +20,11 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private readonly OsdToolTip _osd;
     private readonly Icon _syncIcon;
     private readonly Icon _pauseIcon;
+    // v2.3.6: shown when SOME folders/devices are paused but not all — pause
+    // bars are amber instead of white so partial-pause is visually distinct
+    // from full-pause without needing a tooltip read. Same blue circle so it
+    // still reads as "pause-related" at a glance.
+    private readonly Icon _partialIcon;
 
     // Hidden form to receive WndProc messages (TaskbarCreated, middle-click)
     private readonly MessageWindow _messageWindow;
@@ -139,6 +144,10 @@ internal sealed class TrayApplicationContext : ApplicationContext
     // Cached state for change detection
     private bool _lastRunningState;
     private bool _lastPausedState;
+    // v2.3.6: also track per-folder/per-device pause counts so the cache
+    // invalidates when partial-pause state changes (some paused but not all).
+    private int _lastPausedFoldersCount = -1;
+    private int _lastPausedDevicesCount = -1;
     private bool _firstIconPoll = true;
     private long _lastUnexpectedStopAlertTick;
 
@@ -212,6 +221,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         // Load icons from embedded resources
         _syncIcon = LoadEmbeddedIcon("sync.ico");
         _pauseIcon = LoadEmbeddedIcon("pause.ico");
+        _partialIcon = LoadEmbeddedIcon("partial.ico");
 
         _osd = new OsdToolTip();
 
@@ -439,7 +449,22 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         bool running = IsSyncthingRunning();
 
-        if (_firstIconPoll || running != _lastRunningState || _paused != _lastPausedState)
+        // v2.3.6: per-folder/per-device pause counts drive the new partial.ico
+        // state. "All paused" means every category that has items has all its
+        // items paused (treats empty categories as no-constraint). "Some paused"
+        // = at least one paused but not all — partial state.
+        int pausedFolders = 0;
+        foreach (var f in _folders) if (f.Paused) pausedFolders++;
+        int totalFolders = _folders.Length;
+        int pausedDevices = 0;
+        foreach (var v in _devicePaused.Values) if (v) pausedDevices++;
+        int totalDevices = _devicePaused.Count;
+
+        if (_firstIconPoll
+            || running != _lastRunningState
+            || _paused != _lastPausedState
+            || pausedFolders != _lastPausedFoldersCount
+            || pausedDevices != _lastPausedDevicesCount)
         {
             // Unexpected stop detection. Rate-limit so a crash-restart flap
             // during a Syncthing upgrade or reboot doesn't spam OSDs+beeps.
@@ -471,9 +496,33 @@ internal sealed class TrayApplicationContext : ApplicationContext
             _intentionalStop = false;
             _lastRunningState = running;
             _lastPausedState = _paused;
+            _lastPausedFoldersCount = pausedFolders;
+            _lastPausedDevicesCount = pausedDevices;
             _firstIconPoll = false;
 
-            _trayIcon.Icon = (running && !_paused) ? _syncIcon : _pauseIcon;
+            // Icon state machine (v2.3.6):
+            // - !running                                 → pause icon (stopped — same visual as paused, existing behavior)
+            // - running + global _paused                 → pause icon (full)
+            // - running + every cat fully paused         → pause icon (full, via per-item pauses summing to "everything")
+            // - running + any item paused (not all)      → partial icon (red mini-bars)
+            // - running + nothing paused                 → sync icon
+            bool foldersFullyPaused = totalFolders == 0 || pausedFolders == totalFolders;
+            bool devicesFullyPaused = totalDevices == 0 || pausedDevices == totalDevices;
+            bool hasAnything = totalFolders > 0 || totalDevices > 0;
+            bool allPaused = hasAnything && foldersFullyPaused && devicesFullyPaused;
+            bool somePaused = pausedFolders > 0 || pausedDevices > 0;
+
+            Icon target;
+            if (!running) target = _pauseIcon;
+            else if (_paused || allPaused) target = _pauseIcon;
+            else if (somePaused) target = _partialIcon;
+            else target = _syncIcon;
+            _trayIcon.Icon = target;
+            // Force menu rebuild too so per-folder/per-device label flips visible
+            // even when only the partial-pause counts changed (BuildMenu's own
+            // cache key doesn't include those counts — same gap fixed for the
+            // toggle handlers in v2.3.3).
+            _menuBuilt = false;
             BuildMenu();
         }
     }
