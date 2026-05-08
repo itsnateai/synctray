@@ -4,6 +4,22 @@
 
 All notable changes to SyncthingTray are documented here.
 
+## v2.3.9 — 2026-05-07
+
+### Bug fixes (v2.3.8 verifier rejection — 6 gaps closed)
+- **Migration retry now catches all exceptions, not just `IOException`.** v2.3.8's `catch (IOException)` filter missed `UnauthorizedAccessException` (corp-locked installs / Defender quarantine) — first attempt would throw, retry never fired, migration silently aborted with no actionable detail. Now catches `Exception` for retries; final attempt re-throws to the outer handler.
+- **Pre-delete partial dest before each retry.** v2.3.8's `File.Copy(overwrite: false)` could throw `AlreadyExists` on retries 2-5 if attempt 1 left a partial file at the new path — every subsequent retry repeated the same failure mode, neutering the backoff. Each retry now starts by deleting any leftover partial dest.
+- **Pre-existing dest is verified before deleting legacy.** v2.3.8's "new path already populated" branch trusted the existing file and deleted the legacy without verifying the new file was well-formed. A partial v2.3.8 copy left at the new path would win, real pause snapshot in legacy gets destroyed. Now `VerifyPauseStateFile` (size cap + minutes-int parse + ticks parse for timed pauses) checks the existing dest; if it fails verify, the new file is discarded and the legacy gets migrated normally.
+- **Verify checks the schema's required lines, not just first-line int.** v2.3.8's verify accepted `"0\n"` as valid — it would survive verify but fail downstream parsing. New verify also bounds-checks `minutes` and parses `ticks` for timed pauses.
+- **Stale `.tmp`/`.bak` cleanup runs ONLY when migration succeeded** (or wasn't needed because no legacy file existed). v2.3.8 cleaned them unconditionally, deleting the `.bak` recovery file even after an aborted migration — destroying the user's last recovery affordance.
+- **Last-resort fallback uses `%TEMP%`, not install dir.** v2.3.8's last fallback was `appDir`, which on a stripped-environment session re-introduced the original Syncthing-syncs-pause.dat bug. `%TEMP%` is per-user and writable on every Windows config including service accounts; volatile across reboots in some configs but vastly preferable to silently re-bugging the install dir.
+
+### Performance
+- **Migration retry budget shrunk to 3 attempts × 200/500/1000 ms** (was 5 × 0.5/1.0/1.5/2.0 s). Worst-case ctor delay dropped from 5 s to 1.7 s. Most users hit success on attempt 0; the budget exists for the narrow case where Syncthing is actively hashing the legacy file at ctor entry, which typically resolves within 1 s.
+
+### New
+- **"Resume All Devices" menu item** — symmetric with "Resume All Folders" (also new in v2.3.7). Same gate logic (only shown when at least one device is paused-in-config AND global pause is not active). Useful for unsticking a partial-snapshot resume scenario where some devices stayed paused after a `Resume Syncing` click.
+
 ## v2.3.8 — 2026-05-07
 
 ### Bug fixes (post-v2.3.7 verifier round)
