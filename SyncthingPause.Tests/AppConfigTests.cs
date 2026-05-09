@@ -1,6 +1,6 @@
 using System.Text;
 
-namespace SyncthingTray.Tests;
+namespace SyncthingPause.Tests;
 
 [TestClass]
 public class AppConfigTests
@@ -10,7 +10,7 @@ public class AppConfigTests
     [TestInitialize]
     public void Setup()
     {
-        _tempDir = Path.Combine(Path.GetTempPath(), $"SyncthingTray_Test_{Guid.NewGuid():N}");
+        _tempDir = Path.Combine(Path.GetTempPath(), $"SyncthingPause_Test_{Guid.NewGuid():N}");
         Directory.CreateDirectory(_tempDir);
     }
 
@@ -86,7 +86,7 @@ public class AppConfigTests
     public void BackwardCompat_OldBooleanSettings_MigrateToActions()
     {
         // Simulate old v1.x INI format with DblClickOpen and MiddleClickEnabled
-        var iniPath = Path.Combine(_tempDir, "SyncthingTray.ini");
+        var iniPath = Path.Combine(_tempDir, "SyncthingPause.ini");
         File.WriteAllText(iniPath, "[Settings]\nDblClickOpen=0\nMiddleClickEnabled=0\nApiKey=abc\n",
             new UTF8Encoding(false));
 
@@ -98,7 +98,7 @@ public class AppConfigTests
     [TestMethod]
     public void BackwardCompat_OldBooleanEnabled_MigratesToDefaults()
     {
-        var iniPath = Path.Combine(_tempDir, "SyncthingTray.ini");
+        var iniPath = Path.Combine(_tempDir, "SyncthingPause.ini");
         File.WriteAllText(iniPath, "[Settings]\nDblClickOpen=1\nMiddleClickEnabled=1\n",
             new UTF8Encoding(false));
 
@@ -110,7 +110,7 @@ public class AppConfigTests
     [TestMethod]
     public void NewActionSettings_TakePrecedenceOverOldBooleans()
     {
-        var iniPath = Path.Combine(_tempDir, "SyncthingTray.ini");
+        var iniPath = Path.Combine(_tempDir, "SyncthingPause.ini");
         File.WriteAllText(iniPath,
             "[Settings]\nDblClickOpen=1\nDblClickAction=rescan\nMiddleClickEnabled=1\nMiddleClickAction=webui\n",
             new UTF8Encoding(false));
@@ -185,7 +185,7 @@ public class AppConfigTests
     [TestMethod]
     public void CorruptIni_UsesDefaults()
     {
-        var iniPath = Path.Combine(_tempDir, "SyncthingTray.ini");
+        var iniPath = Path.Combine(_tempDir, "SyncthingPause.ini");
         File.WriteAllText(iniPath, "this is not a valid ini file\n\x00\x01\x02",
             new UTF8Encoding(false));
 
@@ -198,7 +198,7 @@ public class AppConfigTests
     [TestMethod]
     public void CorruptIni_LoadResultIsCorrupt()
     {
-        var iniPath = Path.Combine(_tempDir, "SyncthingTray.ini");
+        var iniPath = Path.Combine(_tempDir, "SyncthingPause.ini");
         File.WriteAllText(iniPath, "this line has no equals sign\nneither does this one\n",
             new UTF8Encoding(false));
 
@@ -209,7 +209,7 @@ public class AppConfigTests
     [TestMethod]
     public void CorruptIni_SaveCreatesBackup()
     {
-        var iniPath = Path.Combine(_tempDir, "SyncthingTray.ini");
+        var iniPath = Path.Combine(_tempDir, "SyncthingPause.ini");
         File.WriteAllText(iniPath, "garbage content with no parseable keys\n",
             new UTF8Encoding(false));
 
@@ -224,7 +224,7 @@ public class AppConfigTests
     [TestMethod]
     public void ValidIni_LoadResultIsNone()
     {
-        var iniPath = Path.Combine(_tempDir, "SyncthingTray.ini");
+        var iniPath = Path.Combine(_tempDir, "SyncthingPause.ini");
         File.WriteAllText(iniPath, "[Settings]\nApiKey=abc\n", new UTF8Encoding(false));
         var config = new AppConfig(_tempDir);
         Assert.AreEqual(AppConfigLoadResult.None, config.LoadResult);
@@ -254,10 +254,70 @@ public class AppConfigTests
     [TestMethod]
     public void DiagnosticLogging_ExplicitOnRoundTrips()
     {
-        var iniPath = Path.Combine(_tempDir, "SyncthingTray.ini");
+        var iniPath = Path.Combine(_tempDir, "SyncthingPause.ini");
         File.WriteAllText(iniPath, "[Settings]\nDiagnosticLogging=1\n");
         var config = new AppConfig(_tempDir);
         Assert.IsTrue(config.DiagnosticLogging);
+    }
+
+    // ─── v3.0.0 rename-predecessor dual-read ────────────────────────
+
+    [TestMethod]
+    public void RenameMigration_OnlyLegacyExists_LoadsFromLegacy()
+    {
+        // Drop a SyncthingTray.ini next to the exe, no SyncthingPause.ini.
+        // AppConfig must one-shot copy across so the user's settings survive
+        // the rename. Legacy file is preserved.
+        var legacyPath = Path.Combine(_tempDir, "SyncthingTray.ini");
+        File.WriteAllText(legacyPath, "[Settings]\nApiKey=legacy-key\nStartupDelay=42\n",
+            new UTF8Encoding(false));
+
+        var config = new AppConfig(_tempDir);
+
+        Assert.IsFalse(config.IsFirstRun, "Legacy .ini should bridge IsFirstRun=false");
+        Assert.AreEqual("legacy-key", config.ApiKey);
+        Assert.AreEqual(42, config.StartupDelay);
+        Assert.AreEqual(AppConfigLoadResult.None, config.LoadResult);
+        Assert.IsTrue(File.Exists(legacyPath), "Legacy file must be preserved for rollback");
+        Assert.IsTrue(File.Exists(Path.Combine(_tempDir, "SyncthingPause.ini")),
+            "New-name .ini should have been seeded from legacy");
+    }
+
+    [TestMethod]
+    public void RenameMigration_BothExist_NewNameWins()
+    {
+        // If a user already ran SyncthingPause once and then accidentally
+        // dropped a stale SyncthingTray.ini back in, the new-name file must
+        // win — copying from legacy on top would silently overwrite the
+        // user's actual settings.
+        var legacyPath = Path.Combine(_tempDir, "SyncthingTray.ini");
+        var newPath = Path.Combine(_tempDir, "SyncthingPause.ini");
+        File.WriteAllText(legacyPath, "[Settings]\nApiKey=stale-legacy\n", new UTF8Encoding(false));
+        File.WriteAllText(newPath, "[Settings]\nApiKey=current-pause\n", new UTF8Encoding(false));
+
+        var config = new AppConfig(_tempDir);
+
+        Assert.AreEqual("current-pause", config.ApiKey);
+    }
+
+    [TestMethod]
+    public void RenameMigration_SaveAlwaysWritesToNewPath()
+    {
+        // Even when load came from legacy, Save() must write to the new
+        // path so subsequent launches don't keep diverging from the legacy
+        // and produce surprises if the legacy file is later edited.
+        var legacyPath = Path.Combine(_tempDir, "SyncthingTray.ini");
+        var newPath = Path.Combine(_tempDir, "SyncthingPause.ini");
+        File.WriteAllText(legacyPath, "[Settings]\nApiKey=legacy-key\n", new UTF8Encoding(false));
+
+        var config = new AppConfig(_tempDir);
+        config.ApiKey = "updated-key";
+        Assert.IsTrue(config.Save());
+
+        Assert.IsTrue(File.Exists(newPath));
+        var newContent = File.ReadAllText(newPath);
+        Assert.IsTrue(newContent.Contains("ApiKey=updated-key"),
+            "Save must produce the new-path .ini with the updated value");
     }
 
     // ─── Security validators ─────────────────────────────────────────
@@ -377,75 +437,87 @@ public class AppConfigTests
     [TestMethod]
     public void ParseShaSum_StandardFormat()
     {
-        var content = "abc123def456  SyncthingTray.exe\n";
-        Assert.AreEqual("abc123def456", UpdateDialog.ParseShaSum(content, "SyncthingTray.exe"));
+        var content = "abc123def456  SyncthingPause.exe\n";
+        Assert.AreEqual("abc123def456", UpdateDialog.ParseShaSum(content, "SyncthingPause.exe"));
     }
 
     [TestMethod]
     public void ParseShaSum_StarredBinaryMode()
     {
-        var content = "abc123  *SyncthingTray.exe\n";
-        Assert.AreEqual("abc123", UpdateDialog.ParseShaSum(content, "SyncthingTray.exe"));
+        var content = "abc123  *SyncthingPause.exe\n";
+        Assert.AreEqual("abc123", UpdateDialog.ParseShaSum(content, "SyncthingPause.exe"));
     }
 
     [TestMethod]
     public void ParseShaSum_CaseInsensitiveFilename()
     {
-        var content = "abc123  SYNCTHINGTRAY.EXE\n";
-        Assert.AreEqual("abc123", UpdateDialog.ParseShaSum(content, "SyncthingTray.exe"));
+        var content = "abc123  SYNCTHINGPAUSE.EXE\n";
+        Assert.AreEqual("abc123", UpdateDialog.ParseShaSum(content, "SyncthingPause.exe"));
     }
 
     [TestMethod]
     public void ParseShaSum_CrlfLineEndings()
     {
-        var content = "abc123  SyncthingTray.exe\r\notherfile  other.exe\r\n";
-        Assert.AreEqual("abc123", UpdateDialog.ParseShaSum(content, "SyncthingTray.exe"));
+        var content = "abc123  SyncthingPause.exe\r\notherfile  other.exe\r\n";
+        Assert.AreEqual("abc123", UpdateDialog.ParseShaSum(content, "SyncthingPause.exe"));
     }
 
     [TestMethod]
     public void ParseShaSum_MultipleEntries_PicksCorrect()
     {
-        var content = "deadbeef  OtherFile.exe\nabc123  SyncthingTray.exe\nffffff  Third.exe\n";
-        Assert.AreEqual("abc123", UpdateDialog.ParseShaSum(content, "SyncthingTray.exe"));
+        var content = "deadbeef  OtherFile.exe\nabc123  SyncthingPause.exe\nffffff  Third.exe\n";
+        Assert.AreEqual("abc123", UpdateDialog.ParseShaSum(content, "SyncthingPause.exe"));
     }
 
     [TestMethod]
     public void ParseShaSum_NotFound_ReturnsNull()
     {
         var content = "abc123  OtherFile.exe\n";
-        Assert.IsNull(UpdateDialog.ParseShaSum(content, "SyncthingTray.exe"));
+        Assert.IsNull(UpdateDialog.ParseShaSum(content, "SyncthingPause.exe"));
     }
 
     [TestMethod]
     public void ParseShaSum_EmptyContent_ReturnsNull()
     {
-        Assert.IsNull(UpdateDialog.ParseShaSum("", "SyncthingTray.exe"));
-        Assert.IsNull(UpdateDialog.ParseShaSum("\n\n\n", "SyncthingTray.exe"));
+        Assert.IsNull(UpdateDialog.ParseShaSum("", "SyncthingPause.exe"));
+        Assert.IsNull(UpdateDialog.ParseShaSum("\n\n\n", "SyncthingPause.exe"));
     }
 
     [TestMethod]
     public void ParseShaSum_SkipsCommentsAndBlankLines()
     {
-        var content = "# header comment\n\nabc123  SyncthingTray.exe\n\n# footer\n";
-        Assert.AreEqual("abc123", UpdateDialog.ParseShaSum(content, "SyncthingTray.exe"));
+        var content = "# header comment\n\nabc123  SyncthingPause.exe\n\n# footer\n";
+        Assert.AreEqual("abc123", UpdateDialog.ParseShaSum(content, "SyncthingPause.exe"));
     }
 
     [TestMethod]
     public void ParseShaSum_MalformedLines_Skipped()
     {
-        var content = "not enough parts\njust-one-token\nabc123  SyncthingTray.exe\n";
-        Assert.AreEqual("abc123", UpdateDialog.ParseShaSum(content, "SyncthingTray.exe"));
+        var content = "not enough parts\njust-one-token\nabc123  SyncthingPause.exe\n";
+        Assert.AreEqual("abc123", UpdateDialog.ParseShaSum(content, "SyncthingPause.exe"));
     }
 
     // ─── IsAllowedReleaseAssetUrl (v2.2.35 suffix-match + per-hop model) ────────
 
     [TestMethod]
-    public void AllowUrl_GitHubReleaseDownload_Accepted() =>
+    public void AllowUrl_GitHubReleaseDownload_NewName_Accepted() =>
         Assert.IsTrue(UpdateDialog.IsAllowedReleaseAssetUrl(
-            "https://github.com/itsnateai/synctray/releases/download/v2.2.35/SyncthingTray.exe"));
+            "https://github.com/itsnateai/syncthingpause/releases/download/v3.0.0/SyncthingPause.exe"));
 
     [TestMethod]
-    public void AllowUrl_ApiGitHub_RepoScoped_Accepted() =>
+    public void AllowUrl_GitHubReleaseDownload_LegacyRepoName_Accepted() =>
+        // v3.0.0 rename predecessor — cached release URLs from SyncthingTray
+        // v2.x must keep validating during the redirect window.
+        Assert.IsTrue(UpdateDialog.IsAllowedReleaseAssetUrl(
+            "https://github.com/itsnateai/synctray/releases/download/v2.2.35/SyncthingPause.exe"));
+
+    [TestMethod]
+    public void AllowUrl_ApiGitHub_NewName_Accepted() =>
+        Assert.IsTrue(UpdateDialog.IsAllowedReleaseAssetUrl(
+            "https://api.github.com/repos/itsnateai/syncthingpause/releases/latest"));
+
+    [TestMethod]
+    public void AllowUrl_ApiGitHub_LegacyRepoName_Accepted() =>
         Assert.IsTrue(UpdateDialog.IsAllowedReleaseAssetUrl(
             "https://api.github.com/repos/itsnateai/synctray/releases/latest"));
 
@@ -462,7 +534,7 @@ public class AppConfigTests
     [TestMethod]
     public void AllowUrl_WrongOwner_OnGitHubCom_Rejected() =>
         Assert.IsFalse(UpdateDialog.IsAllowedReleaseAssetUrl(
-            "https://github.com/attacker/synctray/releases/download/v9/SyncthingTray.exe"));
+            "https://github.com/attacker/synctray/releases/download/v9/SyncthingPause.exe"));
 
     [TestMethod]
     public void AllowUrl_WrongRepo_OnApiGitHub_Rejected() =>

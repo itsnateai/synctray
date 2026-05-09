@@ -5,7 +5,7 @@ using System.Security.Cryptography;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 
-namespace SyncthingTray;
+namespace SyncthingPause;
 
 /// <summary>
 /// Manual update checker — no telemetry, no background requests.
@@ -35,8 +35,8 @@ internal sealed class UpdateDialog : Form
     private int _marqueePos;
     private bool _marqueeForward = true;
 
-    private const string AppName = "SyncthingTray";
-    private const string GitHubRepo = "itsnateai/synctray";
+    private const string AppName = "SyncthingPause";
+    private const string GitHubRepo = "itsnateai/syncthingpause";
 
     private static readonly Color BgColor = Color.FromArgb(0x1E, 0x1E, 0x2E);
     private static readonly Color FgColor = Color.FromArgb(0xCD, 0xD6, 0xF3);
@@ -278,7 +278,7 @@ internal sealed class UpdateDialog : Form
                 foreach (var asset in assets.EnumerateArray())
                 {
                     var name = asset.GetProperty("name").GetString() ?? "";
-                    if (name.Equals("SyncthingTray.exe", StringComparison.OrdinalIgnoreCase))
+                    if (name.Equals("SyncthingPause.exe", StringComparison.OrdinalIgnoreCase))
                     {
                         _downloadUrl = asset.GetProperty("browser_download_url").GetString() ?? "";
                     }
@@ -413,13 +413,13 @@ internal sealed class UpdateDialog : Form
                 return;
             }
 
-            string? expectedHash = ParseShaSum(hashContent, "SyncthingTray.exe");
+            string? expectedHash = ParseShaSum(hashContent, "SyncthingPause.exe");
 
             if (string.IsNullOrEmpty(expectedHash))
             {
                 TryDelete(newPath);
                 ShowError("Integrity verification failed.",
-                    "SHA256SUMS has no entry for SyncthingTray.exe.");
+                    "SHA256SUMS has no entry for SyncthingPause.exe.");
                 return;
             }
 
@@ -514,7 +514,7 @@ internal sealed class UpdateDialog : Form
         {
             var dir = Path.Combine(
                 Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "SyncthingTray");
+                "SyncthingPause");
             try { Directory.CreateDirectory(dir); } catch { /* fall back below */ }
             return Path.Combine(dir, ".crashguard");
         }
@@ -736,7 +736,7 @@ internal sealed class UpdateDialog : Form
         _progressOuter.Visible = false;
         _lblStatus.Text = "This installation is managed by winget.";
         _lblStatus.ForeColor = WarnColor;
-        _lblDetail.Text = "Use:  winget upgrade itsnateai.SyncthingTray";
+        _lblDetail.Text = "Use:  winget upgrade itsnateai.SyncthingPause";
         _btnAction.Visible = false;
         _btnCancel.Text = "OK";
         _btnCancel.Location = new Point(170, 112);
@@ -765,9 +765,11 @@ internal sealed class UpdateDialog : Form
         string host = uri.Host;
         if (host.EndsWith(".githubusercontent.com", StringComparison.OrdinalIgnoreCase)) return true;
         if (host.Equals("api.github.com", StringComparison.OrdinalIgnoreCase) &&
-            uri.AbsolutePath.StartsWith("/repos/itsnateai/synctray/", StringComparison.OrdinalIgnoreCase)) return true;
+            (uri.AbsolutePath.StartsWith("/repos/itsnateai/syncthingpause/", StringComparison.OrdinalIgnoreCase) ||
+             uri.AbsolutePath.StartsWith("/repos/itsnateai/synctray/", StringComparison.OrdinalIgnoreCase))) return true;
         if (host.Equals("github.com", StringComparison.OrdinalIgnoreCase) &&
-            uri.AbsolutePath.StartsWith("/itsnateai/synctray/", StringComparison.OrdinalIgnoreCase)) return true;
+            (uri.AbsolutePath.StartsWith("/itsnateai/syncthingpause/", StringComparison.OrdinalIgnoreCase) ||
+             uri.AbsolutePath.StartsWith("/itsnateai/synctray/", StringComparison.OrdinalIgnoreCase))) return true;
         return false;
     }
 

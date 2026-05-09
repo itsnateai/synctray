@@ -1,4 +1,4 @@
-namespace SyncthingTray;
+namespace SyncthingPause;
 
 /// <summary>
 /// Sanitises untrusted strings (folder labels, device names) before they reach

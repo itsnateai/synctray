@@ -4,7 +4,7 @@ using System.Management;
 using System.Text.Json;
 using System.Text.Json.Nodes;
 
-namespace SyncthingTray;
+namespace SyncthingPause;
 
 /// <summary>
 /// Main application context — manages the system tray icon, context menu,
@@ -174,7 +174,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private bool _wmiFailureNotified;
 
     // Pre-computed constant strings (avoid repeated interpolation)
-    private static readonly string TitleString = $"SyncthingTray v{AppConfig.Version}";
+    private static readonly string TitleString = $"SyncthingPause v{AppConfig.Version}";
 
     // v2.3.0 menu coloring (Catppuccin-Mocha-aligned, readable on the dark bg).
     // Applied via Item.Tag = Color, honored by DarkMenuRenderer.OnRenderItemText.
@@ -217,7 +217,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         var appDir = Path.GetDirectoryName(Environment.ProcessPath ?? Application.ExecutablePath) ?? AppContext.BaseDirectory;
         _config = new AppConfig(appDir);
         TrayLog.Enable(_config.DiagnosticLogging);
-        TrayLog.Info($"SyncthingTray v{AppConfig.Version} starting. Portable={_config.IsPortable}, FirstRun={_config.IsFirstRun}.");
+        TrayLog.Info($"SyncthingPause v{AppConfig.Version} starting. Portable={_config.IsPortable}, FirstRun={_config.IsFirstRun}.");
         _api = new SyncthingApi(_config);
 
         // Load icons from embedded resources
@@ -264,7 +264,8 @@ internal sealed class TrayApplicationContext : ApplicationContext
         // absolute UTC deadline so wake-from-sleep doesn't drift the resume time.
         _pauseTimer = new System.Windows.Forms.Timer();
         _pauseTimer.Tick += OnPauseTimerTick;
-        // v2.3.7: pause.dat moved out of appDir into %LOCALAPPDATA%\SyncthingTray\.
+        // v2.3.7: pause.dat moved out of appDir into %LOCALAPPDATA%\SyncthingPause\
+        // (was %LOCALAPPDATA%\SyncthingTray\ before the v3.0.0 rename).
         // Old location was a real bug for users whose install dir is itself a
         // Syncthing folder — every PersistPauseState/DeletePauseStateFile cycle
         // triggered Syncthing to sync the create+delete, and the hashing race
@@ -317,11 +318,52 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 TrayLog.Warn("LOCALAPPDATA + USERPROFILE + TEMP all empty; falling back to install dir (will re-bug Syncthing-syncs-pause.dat for synced installs — please report this environment).");
             }
         }
-        var stateDir = Path.Combine(localAppData, "SyncthingTray");
+        var stateDir = Path.Combine(localAppData, "SyncthingPause");
         try { Directory.CreateDirectory(stateDir); }
         catch (Exception ex) { TrayLog.Warn($"Could not create state dir {stateDir}: {ex.Message}"); }
         _pauseStatePath = Path.Combine(stateDir, "pause.dat");
-        TryMigratePauseDat(appDir);
+        // v3.0.0: migrate from rename predecessor SyncthingTray's AppData
+        // location FIRST (post-v2.3.7 SyncthingTray installs put pause.dat
+        // here — the live state for users upgrading from the rename window).
+        // Then the original install-dir migration covers pre-v2.3.7 SyncthingTray
+        // installs that never got the v2.3.7 AppData migration. Order matters:
+        // if both exist, AppData wins because TryMigratePauseDat verifies
+        // pre-existing dest before clobbering.
+        // Portable installs deliberately don't reach into a foreign machine's
+        // %LOCALAPPDATA%\SyncthingTray\ — that snapshot belongs to whoever
+        // installed the fixed predecessor on this PC, not the portable USB
+        // user. We'd otherwise migrate-and-delete state we don't own,
+        // breaking the fixed install on the next boot. Install-dir migration
+        // still runs unconditionally because that path IS the portable
+        // user's own folder.
+        if (!_config.IsPortable)
+        {
+            var renamePredecessorPath = Path.Combine(localAppData, "SyncthingTray", "pause.dat");
+            TryMigratePauseDat(renamePredecessorPath);
+        }
+        TryMigratePauseDat(Path.Combine(appDir, "pause.dat"));
+        // v3.0.0: also evict any leftover SyncthingTray.lnk from the Startup
+        // folder so a parallel auto-launch of the rename predecessor on next
+        // boot can't race us for syncthing.exe ownership. If the user had
+        // RunOnStartup=true under SyncthingTray, recreate the shortcut under
+        // the new name so they don't lose auto-launch silently. Capture
+        // existence BEFORE deletion — Cleanup is best-effort.
+        bool legacyLnkExisted = StartupShortcut.LegacyRenamePredecessorLnkExists();
+        StartupShortcut.CleanupRenamePredecessorLnk();
+        if (legacyLnkExisted && _config.RunOnStartup)
+        {
+            // Use the running exe path itself as the icon source — the .ico
+            // resources are embedded so Windows pulls icons straight from the
+            // exe's resource section. Verifier round 2: surface failure via
+            // OSD too — Apply()'s internal TrayLog.Warn is opt-in so a user
+            // with DiagnosticLogging=0 would otherwise lose auto-launch
+            // silently. _osd is constructed earlier in this ctor (line ~228)
+            // so ShowOsd is safe to call here.
+            if (!StartupShortcut.Apply(true, Application.ExecutablePath))
+            {
+                ShowOsd("Could not recreate Run-on-startup shortcut after rename — open Settings to retry.", 6000);
+            }
+        }
         RestorePauseStateOnStartup();
 
         // Startup delay — use a timer so the message pump stays alive
@@ -363,7 +405,15 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         // Notify if we replaced a previous instance
         if (Program.KilledPreviousInstance)
-            ShowOsd("Replaced previous SyncthingTray instance", 3000);
+            ShowOsd("Replaced previous SyncthingPause instance", 3000);
+
+        // v3.0.0: notify when we replaced a SyncthingTray (rename predecessor)
+        // instance — gives the user an explainer for the tray-icon swap they
+        // just witnessed instead of letting it look like SyncthingTray
+        // mysteriously vanished. Different message than the same-name path so
+        // post-rename support tickets can disambiguate the two scenarios.
+        if (Program.KilledRenamePredecessor)
+            ShowOsd("SyncthingTray replaced by SyncthingPause (renamed at v3.0.0)", 5000);
 
         // Surface config-load failures that happened before the OSD existed.
         switch (_config.LoadResult)
@@ -373,7 +423,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 TrayLog.Warn($"AppConfig.Load: file locked or unreadable: {Path.GetFileName(_config.SettingsFilePath)}");
                 break;
             case AppConfigLoadResult.Corrupt:
-                ShowOsd("SyncthingTray.ini appears corrupt — defaults loaded; original will be backed up on Save", 8000);
+                ShowOsd("SyncthingPause.ini appears corrupt — defaults loaded; original will be backed up on Save", 8000);
                 TrayLog.Warn($"AppConfig.Load: corrupt file detected: {Path.GetFileName(_config.SettingsFilePath)}");
                 break;
         }
@@ -2353,10 +2403,12 @@ internal sealed class TrayApplicationContext : ApplicationContext
     private const string PauseStateSchemaV3 = "v3";
 
     /// <summary>
-    /// v2.3.9 — migrate pause.dat from the legacy install-dir location to the
+    /// Migrate pause.dat from a caller-supplied legacy location to the active
     /// AppData state dir. Copy+verify+Delete (instead of File.Move) so a
     /// partial cross-volume copy or a Syncthing-held read lock can't leave the
-    /// state in an unrecoverable in-between.
+    /// state in an unrecoverable in-between. v3.0.0 generalized this to handle
+    /// both the v2.3.7+ %LOCALAPPDATA%\SyncthingTray\ rename-predecessor path
+    /// and the pre-v2.3.7 install-dir path through the same code path.
     ///
     /// Verifier round on v2.3.8 surfaced 6 gaps now closed:
     ///   - Catch <see cref="Exception"/> (not just IOException) so corp-locked
@@ -2376,15 +2428,40 @@ internal sealed class TrayApplicationContext : ApplicationContext
     ///     case ctor delay (was 5 s). Most users hit copied=true on attempt 0
     ///     because Syncthing isn't actively hashing pause.dat at ctor entry.
     /// </summary>
-    private void TryMigratePauseDat(string appDir)
+    private void TryMigratePauseDat(string legacyPath)
     {
-        var legacyPath = Path.Combine(appDir, "pause.dat");
+        // v3.0.0: caller-supplied legacyPath generalizes this to handle BOTH
+        // the v2.3.7+ %LOCALAPPDATA%\SyncthingTray\ rename-predecessor location
+        // AND the pre-v2.3.7 install-dir location. Same Copy+verify+Delete
+        // contract for both sources.
         bool migrationSucceededOrNotNeeded = false;
         try
         {
             if (!File.Exists(legacyPath))
             {
                 migrationSucceededOrNotNeeded = true;
+                return;
+            }
+            // v3.0.0 verifier round 2: refuse symlinks / junctions / mount
+            // points. File.Copy follows reparse points by default; without
+            // this guard, a hostile pause.dat symlinked to a system file
+            // (hosts, an attacker-controlled UNC share, etc.) would be read
+            // from the link target and copied verbatim into our state dir.
+            // Same protection AppConfig has on SyncthingTray.ini. Refuse and
+            // log — leave legacy untouched so the user can investigate.
+            try
+            {
+                var legacyAttrs = File.GetAttributes(legacyPath);
+                if ((legacyAttrs & FileAttributes.ReparsePoint) != 0)
+                {
+                    TrayLog.Warn($"pause.dat: refusing to migrate {legacyPath} — file is a reparse point (symlink / junction / mount). Legacy left intact for manual review.");
+                    migrationSucceededOrNotNeeded = true;
+                    return;
+                }
+            }
+            catch (Exception ex)
+            {
+                TrayLog.Warn($"pause.dat: reparse-point check on legacy failed: {ex.Message} (refusing migration this launch out of caution).");
                 return;
             }
             // v2.3.10: 0-byte legacy file would otherwise loop every launch
@@ -2515,17 +2592,21 @@ internal sealed class TrayApplicationContext : ApplicationContext
             // deleting it on the same launch would compound the failure.
             if (migrationSucceededOrNotNeeded)
             {
-                foreach (var stale in new[] { Path.Combine(appDir, "pause.dat.tmp"), Path.Combine(appDir, "pause.dat.bak") })
+                var legacyDir = Path.GetDirectoryName(legacyPath) ?? string.Empty;
+                if (legacyDir.Length > 0)
                 {
-                    if (!File.Exists(stale)) continue;
-                    try
+                    foreach (var stale in new[] { Path.Combine(legacyDir, "pause.dat.tmp"), Path.Combine(legacyDir, "pause.dat.bak") })
                     {
-                        File.Delete(stale);
-                        TrayLog.Info($"pause.dat: cleaned up stale {Path.GetFileName(stale)} from legacy location.");
-                    }
-                    catch (Exception ex)
-                    {
-                        TrayLog.Warn($"pause.dat: stale {Path.GetFileName(stale)} cleanup failed: {ex.Message} (will retry next launch).");
+                        if (!File.Exists(stale)) continue;
+                        try
+                        {
+                            File.Delete(stale);
+                            TrayLog.Info($"pause.dat: cleaned up stale {Path.GetFileName(stale)} from legacy location.");
+                        }
+                        catch (Exception ex)
+                        {
+                            TrayLog.Warn($"pause.dat: stale {Path.GetFileName(stale)} cleanup failed: {ex.Message} (will retry next launch).");
+                        }
                     }
                 }
             }

@@ -3,7 +3,7 @@ using System.Net.Http;
 using System.Net.Sockets;
 using System.Text;
 
-namespace SyncthingTray;
+namespace SyncthingPause;
 
 /// <summary>
 /// Synchronous HTTP client for the Syncthing REST API.

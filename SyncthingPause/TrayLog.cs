@@ -1,7 +1,7 @@
-namespace SyncthingTray;
+namespace SyncthingPause;
 
 /// <summary>
-/// Rolling log for field debugging. Writes to %LOCALAPPDATA%\SyncthingTray\tray.log
+/// Rolling log for field debugging. Writes to %LOCALAPPDATA%\SyncthingPause\tray.log
 /// with a 1 MB size cap (rotates to tray.log.1). Opt-in via AppConfig.DiagnosticLogging
 /// so privacy-conscious users can disable it entirely.
 ///
@@ -23,7 +23,7 @@ internal static class TrayLog
             {
                 var dir = Path.Combine(
                     Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                    "SyncthingTray");
+                    "SyncthingPause");
                 try { Directory.CreateDirectory(dir); }
                 catch { /* fall back to TEMP on next write */ }
                 _path = Path.Combine(dir, "tray.log");

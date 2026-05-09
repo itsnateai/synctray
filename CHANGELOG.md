@@ -2,7 +2,35 @@
 
 *LTR — Long-Term Release · one-click self-update built in.*
 
-All notable changes to SyncthingTray are documented here.
+All notable changes to SyncthingPause (formerly SyncthingTray, renamed at v3.0.0) are documented here.
+
+## v3.0.0 — 2026-05-08
+
+### Renamed: SyncthingTray → SyncthingPause
+
+To avoid confusion with [Martchus's Syncthing Tray](https://github.com/Martchus/syncthingtray) (the well-known Qt cross-platform Syncthing tray app, in the ecosystem since ~2016), v3.0.0 ships under a new name that better reflects the project's actual usage pattern: pausing Syncthing when you need bandwidth.
+
+**The code is the same** — same C# .NET 8 WinForms tray companion, same dark-theme UI, same per-folder/per-device pause, same self-update flow. Only the brand changed.
+
+### Migration bridge — automatic, no manual steps required
+
+- **`pause.dat` auto-migration.** On first launch, SyncthingPause copies your paused-folder snapshot from `%LOCALAPPDATA%\SyncthingTray\pause.dat` to `%LOCALAPPDATA%\SyncthingPause\pause.dat` using the same Copy + verify + Delete pattern from v2.3.7's earlier install-dir → AppData migration. If both legacy locations exist (pre-v2.3.7 install-dir AND v2.3.7+ AppData), the more-recent AppData copy wins. The legacy file is left in place if migration fails for any reason — your pause state is never lost.
+- **`SyncthingTray.ini` one-shot copy.** Co-located settings files are copied to `SyncthingPause.ini` on first launch. Legacy file is preserved for rollback. Save() always writes to the new path.
+- **Startup `.lnk` cleanup.** Any `SyncthingTray.lnk` in your Startup folder is removed on first launch so old and new don't both auto-launch and fight over `syncthing.exe` ownership.
+- **Running predecessor kill.** SyncthingPause's `Program.Main` kills any `SyncthingTray.exe` in your session before acquiring its single-instance mutex, so the rename predecessor releases its `pause.dat` lock before migration runs.
+
+### Breaking changes
+
+- **WinGet PackageIdentifier changed** from `itsnateai.SyncthingTray` to `itsnateai.SyncthingPause`. WinGet IDs are immutable, so `winget upgrade` will not carry your v2.x install across — manually `winget install itsnateai.SyncthingPause`, then `winget uninstall itsnateai.SyncthingTray` once you've verified state migrated. A deprecation manifest for the old ID points users at the new one.
+- **GitHub repo renamed** from `itsnateai/synctray` to `itsnateai/syncthingpause`. Old URL auto-redirects.
+- **Asset name changed** from `SyncthingTray.exe` to `SyncthingPause.exe`. The in-app updater's URL allowlist accepts both old and new repo paths during the transition window so cached release URLs keep working.
+- **State paths renamed** — `%LOCALAPPDATA%\SyncthingTray\` → `%LOCALAPPDATA%\SyncthingPause\`, `SyncthingTray.ini` → `SyncthingPause.ini`, mutex name `SyncthingTray_SingleInstance` → `SyncthingPause_SingleInstance`.
+
+### Verifier coverage
+
+- 87 tests pass (3 new tests for the rename-predecessor migration paths: legacy-only loads from legacy, both-exist new-name wins, save-always-writes-new; 2 new tests for the new-repo-name URL allowlist).
+- 8-agent verifier sweep (Sonnet + Opus on each of: diff-clean, gap-audit, code-review, blast-radius) — closed 6 convergent findings: WaitForExit after Kill (race-window fix), KilledRenamePredecessor wired to OSD, INI Copy reparse-point + 256 KB size cap, portable-mode guard around rename-predecessor pause.dat migration, RunOnStartup .lnk recreation when legacy .lnk existed, this test count.
+- Pre-rename state tagged at `pre-rename-v2.3.11` for rollback if needed.
 
 ## v2.3.11 — 2026-05-07
 
@@ -12,7 +40,7 @@ All notable changes to SyncthingTray are documented here.
 
 ### Notes
 - These changes are no-ops on Windows 10 and Server SKUs (the `NotifyIconSettings` registry schema is Win11 22H2+ only). The build-version guard short-circuits before any registry access.
-- All registry interaction is wrapped in try/catch and goes through `tray.log` (opt-in via `DiagnosticLogging=1` in `SyncthingTray.ini`). A schema change in a future Windows build silently no-ops rather than crashing the tray.
+- All registry interaction is wrapped in try/catch and goes through `tray.log` (opt-in via `DiagnosticLogging=1` in `SyncthingPause.ini`). A schema change in a future Windows build silently no-ops rather than crashing the tray.
 
 ## v2.3.10 — 2026-05-07
 

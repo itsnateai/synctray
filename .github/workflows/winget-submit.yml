@@ -13,8 +13,8 @@ permissions:
   contents: read
 
 env:
-  PACKAGE_IDENTIFIER: itsnateai.SyncthingTray
-  ASSET_NAME: SyncthingTray.exe
+  PACKAGE_IDENTIFIER: itsnateai.SyncthingPause
+  ASSET_NAME: SyncthingPause.exe
 
 jobs:
   submit:

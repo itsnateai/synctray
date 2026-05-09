@@ -1,4 +1,4 @@
-namespace SyncthingTray.Tests;
+namespace SyncthingPause.Tests;
 
 [TestClass]
 public class MenuTextSanitizerTests

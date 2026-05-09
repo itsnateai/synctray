@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 
-namespace SyncthingTray;
+namespace SyncthingPause;
 
 internal static partial class NativeMethods
 {

@@ -1,4 +1,4 @@
-namespace SyncthingTray.Tests;
+namespace SyncthingPause.Tests;
 
 // Covers P1-A2 from Run 2b: the original `isUnc = path.StartsWith(@"\\")` guard
 // in OpenFolder only caught backslash UNC. Forward-slash and mixed-slash UNC

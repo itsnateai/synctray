@@ -6,6 +6,9 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
 
+    <AssemblyName>SyncthingPause.Tests</AssemblyName>
+    <RootNamespace>SyncthingPause.Tests</RootNamespace>
+
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
   </PropertyGroup>
@@ -22,7 +25,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\SyncthingTray\SyncthingTray.csproj" />
+    <ProjectReference Include="..\SyncthingPause\SyncthingPause.csproj" />
   </ItemGroup>
 
 </Project>

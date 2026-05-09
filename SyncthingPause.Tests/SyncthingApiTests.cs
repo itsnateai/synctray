@@ -2,7 +2,7 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 
-namespace SyncthingTray.Tests;
+namespace SyncthingPause.Tests;
 
 [TestClass]
 public class SyncthingApiTests
@@ -12,7 +12,7 @@ public class SyncthingApiTests
     [TestInitialize]
     public void Setup()
     {
-        _tempDir = Path.Combine(Path.GetTempPath(), $"SyncthingApi_Test_{Guid.NewGuid():N}");
+        _tempDir = Path.Combine(Path.GetTempPath(), $"SyncthingPauseApi_Test_{Guid.NewGuid():N}");
         Directory.CreateDirectory(_tempDir);
     }
 

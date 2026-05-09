@@ -3,12 +3,12 @@ using System.Collections.Generic;
 using System.IO;
 using Microsoft.Win32;
 
-namespace SyncthingTray;
+namespace SyncthingPause;
 
 /// <summary>
 /// On Windows 11, new tray icons default to hidden-in-overflow until the user
 /// manually flips "Show icon in taskbar" under Settings → Personalization →
-/// Taskbar → Other system tray icons. For a tray-only app like SyncthingTray
+/// Taskbar → Other system tray icons. For a tray-only app like SyncthingPause
 /// that delivers no value while hidden, that's a painful first-run experience.
 ///
 /// Windows 11 22H2+ stores per-icon visibility at
@@ -33,7 +33,7 @@ namespace SyncthingTray;
 /// Plus a startup-only zombie sweep (<see cref="SweepStaleEntries"/>) that
 /// reaps subkeys left behind by prior versions: WinGet versioned-install dirs
 /// and .NET single-file extraction caches both leave the registry pointing at
-/// dead paths, accumulating "N SyncthingTrays" cruft in the Settings list.
+/// dead paths, accumulating "N SyncthingPauses" cruft in the Settings list.
 ///
 /// We never override an explicit <c>IsPromoted=0</c> — that's the user
 /// having deliberately hidden us, and we respect it.

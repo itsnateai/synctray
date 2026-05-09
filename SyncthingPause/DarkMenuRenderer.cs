@@ -1,4 +1,4 @@
-namespace SyncthingTray;
+namespace SyncthingPause;
 
 /// <summary>
 /// Custom ToolStripRenderer that applies the dark theme (matching Settings/Help forms)

@@ -1,12 +1,12 @@
 using System.Diagnostics;
 using System.Text;
 
-namespace SyncthingTray;
+namespace SyncthingPause;
 
 /// <summary>
 /// Dark-themed Help window. Renders structured help text via a RichTextBox with
 /// section headers and body paragraphs — same pattern as MicMute's help, adapted
-/// for SyncTray's narrower (400px) fixed window.
+/// for SyncthingPause's narrower (400px) fixed window.
 /// </summary>
 internal sealed class HelpForm : Form
 {
@@ -63,24 +63,24 @@ Updates — daily poll for new Syncthing releases.
 
 Sluggish menu — tray probes with a 1.5s TCP check when Syncthing is off.
 
-Log: %LOCALAPPDATA%\SyncthingTray\tray.log (off by default — opt in via DiagnosticLogging=1).
+Log: %LOCALAPPDATA%\SyncthingPause\tray.log (off by default — opt in via DiagnosticLogging=1).
 
 ——— LINKS ————————————————————————
 
 docs.syncthing.net
-github.com/itsnateai/synctray";
+github.com/itsnateai/syncthingpause";
 
     private readonly string _iniPath;
     private readonly Action<string, int> _showOsd;
 
-    /// <param name="iniPath">Absolute path to SyncthingTray.ini — used by the Backup button.</param>
+    /// <param name="iniPath">Absolute path to SyncthingPause.ini — used by the Backup button.</param>
     /// <param name="showOsd">Callback to display an OSD message (text, duration ms) — reuses the tray's OSD rather than MessageBox per the project's notification convention.</param>
     public HelpForm(string iniPath, Action<string, int> showOsd)
     {
         _iniPath = iniPath;
         _showOsd = showOsd;
 
-        Text = "SyncthingTray Help";
+        Text = "SyncthingPause Help";
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         MinimizeBox = false;
@@ -99,7 +99,7 @@ github.com/itsnateai/synctray";
 
         var lblTitle = new Label
         {
-            Text = $"SyncthingTray v{AppConfig.Version}",
+            Text = $"SyncthingPause v{AppConfig.Version}",
             Font = labelFont,
             ForeColor = FgColor,
             Location = new Point(16, 14),
@@ -252,7 +252,7 @@ github.com/itsnateai/synctray";
     }
 
     /// <summary>
-    /// Copies SyncthingTray.ini to a timestamped sibling file. The INI holds every
+    /// Copies SyncthingPause.ini to a timestamped sibling file. The INI holds every
     /// user-visible setting including the Syncthing API key, so a pre-emptive
     /// backup is the user's only recovery path if the file gets clobbered (failed
     /// update, disk issue, accidental edit). Destination path is shown in an OSD

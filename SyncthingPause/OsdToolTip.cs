@@ -1,4 +1,4 @@
-namespace SyncthingTray;
+namespace SyncthingPause;
 
 /// <summary>
 /// Borderless, topmost form that acts as a transient tooltip near the cursor.

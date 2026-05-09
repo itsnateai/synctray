@@ -1,9 +1,9 @@
 using System.Text;
 
-namespace SyncthingTray;
+namespace SyncthingPause;
 
 /// <summary>
-/// Manages INI-based settings for SyncthingTray.
+/// Manages INI-based settings for SyncthingPause.
 /// </summary>
 internal sealed class AppConfig
 {
@@ -60,7 +60,7 @@ internal sealed class AppConfig
 
     public AppConfig(string appDirectory)
     {
-        SettingsFilePath = Path.Combine(appDirectory, "SyncthingTray.ini");
+        SettingsFilePath = Path.Combine(appDirectory, "SyncthingPause.ini");
         SyncExe = Path.Combine(appDirectory, "syncthing.exe");
         if (!File.Exists(SyncExe))
             SyncExe = ValidateSyncExe(DiscoverSyncExe()) ?? SyncExe;
@@ -76,6 +76,57 @@ internal sealed class AppConfig
             }
         }
         catch { /* ignore drive detection failures */ }
+
+        // v3.0.0 — rename predecessor (SyncthingTray) one-shot copy. If we
+        // have no SyncthingPause.ini yet but a co-located SyncthingTray.ini
+        // exists (portable installs that drop the binary in the same dir),
+        // copy it across so the user's settings carry forward. Best-effort:
+        // failure leaves IsFirstRun=true and the legacy file is untouched
+        // for manual recovery. Save() always writes to the new path; the
+        // legacy file is preserved as a rollback affordance.
+        //
+        // Verifier round (2026-05-08): added size cap + symlink/junction
+        // refusal. A symlinked SyncthingTray.ini pointing at a system file
+        // (hosts, SAM, an attacker-controlled UNC share, etc.) would
+        // otherwise be silently copied into our state and parsed; a giant
+        // SyncthingTray.ini (Syncthing-syncs-the-install-dir bug, malicious
+        // padding) would OOM Load() since File.ReadAllLines has no size
+        // bound. 256 KB matches the pause.dat cap and is ~10× any real INI.
+        var legacySettingsPath = Path.Combine(appDirectory, "SyncthingTray.ini");
+        const long LegacyIniMaxBytes = 256 * 1024;
+        if (!File.Exists(SettingsFilePath) && File.Exists(legacySettingsPath))
+        {
+            try
+            {
+                // Refuse symlinks / junctions / mount points — File.Copy follows
+                // reparse points by default and would read attacker-controlled
+                // bytes from anywhere on disk.
+                var attrs = File.GetAttributes(legacySettingsPath);
+                if ((attrs & FileAttributes.ReparsePoint) == 0)
+                {
+                    var legacyInfo = new FileInfo(legacySettingsPath);
+                    if (legacyInfo.Length > 0 && legacyInfo.Length <= LegacyIniMaxBytes)
+                    {
+                        File.Copy(legacySettingsPath, SettingsFilePath, overwrite: false);
+                    }
+                    else if (legacyInfo.Length > LegacyIniMaxBytes)
+                    {
+                        // Verifier round 2: oversized legacy was being skipped
+                        // silently. Log so the user has a breadcrumb when
+                        // they wonder why their old settings didn't carry —
+                        // 256 KB+ INIs typically mean the file is corrupt or
+                        // the install dir got Syncthing'd into a sync loop.
+                        TrayLog.Warn($"AppConfig: legacy SyncthingTray.ini is {legacyInfo.Length} bytes (cap {LegacyIniMaxBytes}); refusing migration. File left intact for manual review.");
+                    }
+                    /* 0-byte legacy: skip silently — empty file = nothing to migrate */
+                }
+                else
+                {
+                    TrayLog.Warn("AppConfig: legacy SyncthingTray.ini is a reparse point (symlink / junction); refusing migration. File left intact for manual review.");
+                }
+            }
+            catch { /* legacy left intact for manual recovery */ }
+        }
 
         IsFirstRun = !File.Exists(SettingsFilePath);
         if (!IsFirstRun)
@@ -158,7 +209,7 @@ internal sealed class AppConfig
             WebUI = ValidateWebUI(webUi);
 
         // Clamp to [0, 3600] at the load boundary. The Settings UI NumericUpDown
-        // already clamps on input, but a user hand-editing SyncthingTray.ini
+        // already clamps on input, but a user hand-editing SyncthingPause.ini
         // (typo, muscle memory from StartupDelay=180000 meaning-ms) could land a
         // value that overflows when the constructor multiplies by 1000 → WinForms
         // Timer.Interval setter throws on <=0, crashing the tray on boot with no
@@ -239,7 +290,7 @@ internal sealed class AppConfig
         {
             if (File.Exists(SettingsFilePath)) return;
             File.WriteAllText(SettingsFilePath,
-                "[Settings]\n; First-run stub — open Settings to configure SyncthingTray.\n",
+                "[Settings]\n; First-run stub — open Settings to configure SyncthingPause.\n",
                 Utf8NoBom);
         }
         catch

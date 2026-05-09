@@ -1,6 +1,6 @@
 using System.Diagnostics;
 
-namespace SyncthingTray;
+namespace SyncthingPause;
 
 /// <summary>
 /// Dark-themed Settings GUI matching the AHK version layout.
@@ -74,7 +74,7 @@ internal sealed class SettingsForm : Form
         _subFont = new Font("Segoe UI", 8f);
         _iconFont = new Font("Segoe MDL2 Assets", 9f);
 
-        Text = $"SyncthingTray v{AppConfig.Version} \u2014 Settings";
+        Text = $"SyncthingPause v{AppConfig.Version} \u2014 Settings";
         // FixedDialog (not FixedToolWindow) so the close button is the standard
         // full-size Windows X rather than the cramped tool-window variant.
         FormBorderStyle = FormBorderStyle.FixedDialog;
@@ -518,7 +518,7 @@ internal sealed class SettingsForm : Form
         // Bottom row: Save(114) | Apply(114) | Cancel(114)
         //   = 342 px of buttons, 2 × 18 px gaps, flows to end at 394.
 
-        AddLinkButton("GitHub", 16, y, 68, "https://github.com/itsnateai/synctray");
+        AddLinkButton("GitHub", 16, y, 68, "https://github.com/itsnateai/syncthingpause");
 
         var btnUpdate = new Button
         {
@@ -970,7 +970,7 @@ internal sealed class SettingsForm : Form
         };
         btn.Click += (_, _) =>
         {
-            // nosemgrep: gitlab.security_code_scan.SCS0001-1 -- AddLinkButton is only called with hardcoded URLs (github.com/itsnateai/synctray, github.com/syncthing/syncthing)
+            // nosemgrep: gitlab.security_code_scan.SCS0001-1 -- AddLinkButton is only called with hardcoded URLs (github.com/itsnateai/syncthingpause, github.com/syncthing/syncthing)
             using var p = Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
         };
         Controls.Add(btn);
