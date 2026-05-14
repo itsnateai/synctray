@@ -77,3 +77,56 @@ jobs:
           files: |
             SyncthingPause.exe
             SHA256SUMS
+
+      # Post-publish verification — softprops/action-gh-release reports
+      # "Uploaded ..." on push but only guarantees the upload-API call
+      # returned 2xx. The step below fetches the release back and asserts
+      # both expected assets are present, state=uploaded, and the release
+      # is not a draft. SCOPE: catches CI-window failure modes (action bug,
+      # eventual-consistency hiccup, concurrent re-run race, edits during
+      # the ~25s retry window). It does NOT catch a human clobbering assets
+      # via `gh release upload --clobber` or the web UI 30s / 30 days later
+      # — that's out of scope here. RETRY_MAX × RETRY_SLEEP is the total
+      # wait budget for GH's asset-list eventual consistency (default 5×5s
+      # = 25s); bump if a repo regularly exceeds that propagation.
+      - name: Verify both assets persisted on the release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+          REPO: ${{ github.repository }}
+          PRIMARY_ASSET: SyncthingPause.exe
+          RETRY_MAX: '5'
+          RETRY_SLEEP: '5'
+        run: |
+          set -euo pipefail
+          attempt=0
+          JSON=''
+          PRI_STATE=''
+          SUM_STATE=''
+          IS_DRAFT=''
+          while [ "$attempt" -lt "$RETRY_MAX" ]; do
+            attempt=$((attempt+1))
+            # Non-fatal gh api so a transient 5xx / rate-limit doesn't kill
+            # the loop before the retry budget is consumed. stderr is folded
+            # into the buffer so the error body lands in $JSON for the final
+            # diagnostics dump (no separate reset path).
+            if ! JSON=$(gh api "repos/${REPO}/releases/tags/${TAG}" 2>&1); then
+              echo "Attempt ${attempt}/${RETRY_MAX}: gh api non-zero — keeping response body for diagnostics. Head: ${JSON:0:200}"
+            fi
+            PRI_STATE=$(printf '%s' "$JSON" | jq -r --arg n "$PRIMARY_ASSET" '.assets[]? | select(.name==$n) | .state' 2>/dev/null || true)
+            SUM_STATE=$(printf '%s' "$JSON" | jq -r '.assets[]? | select(.name=="SHA256SUMS") | .state' 2>/dev/null || true)
+            IS_DRAFT=$(printf '%s' "$JSON" | jq -r '.draft // empty' 2>/dev/null || true)
+            if [ "$PRI_STATE" = "uploaded" ] && [ "$SUM_STATE" = "uploaded" ] && [ "$IS_DRAFT" != "true" ]; then
+              echo "::notice::Release ${TAG} verified: ${PRIMARY_ASSET} + SHA256SUMS both present, not draft"
+              exit 0
+            fi
+            echo "Attempt ${attempt}/${RETRY_MAX}: primary=${PRI_STATE:-MISSING} sum=${SUM_STATE:-MISSING} draft=${IS_DRAFT:-?}"
+            if [ "$attempt" -lt "$RETRY_MAX" ]; then
+              sleep "$RETRY_SLEEP"
+            fi
+          done
+          echo "::error::Release ${TAG} not verified after ${RETRY_MAX} attempts. primary=${PRI_STATE:-MISSING} sum=${SUM_STATE:-MISSING} draft=${IS_DRAFT:-?}"
+          echo "--- Last API response or error body (first 2000 chars) ---"
+          printf '%s\n' "${JSON:0:2000}"
+          exit 1
