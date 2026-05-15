@@ -5,7 +5,11 @@ namespace SyncthingPause;
 /// with a 1 MB size cap (rotates to tray.log.1). Opt-in via AppConfig.DiagnosticLogging
 /// so privacy-conscious users can disable it entirely.
 ///
-/// Thread-safe — all writes go through a lock and timestamps are UTC.
+/// Thread-safe — all writes go through a lock. Timestamps are local time with
+/// ISO 8601 offset (e.g. `2026-05-15T07:30:20.187-06:00`) so the daemon log
+/// and tray log line up at a glance, but the UTC offset still survives DST
+/// transitions and hibernate/wake (don't drop the offset and switch to bare
+/// local — that loses information across daylight-saving).
 /// </summary>
 internal static class TrayLog
 {
@@ -52,7 +56,7 @@ internal static class TrayLog
                         try { File.Move(_path, backup); } catch { }
                     }
                 }
-                var ts = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ss.fffZ");
+                var ts = DateTime.Now.ToString("yyyy-MM-ddTHH:mm:ss.fffzzz");
                 File.AppendAllText(_path, $"{ts} {level} {message}{Environment.NewLine}");
             }
             catch
