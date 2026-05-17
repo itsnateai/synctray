@@ -4,6 +4,30 @@
 
 All notable changes to SyncthingPause (formerly SyncthingTray, renamed at v3.0.0) are documented here.
 
+## v3.1.0 — 2026-05-16
+
+### Feature: explicit one-click upgrade path for the Syncthing daemon
+
+Settings → **Check Now** used to be a read-only probe: it asked the Syncthing daemon whether a newer version was available and showed the answer in a brief OSD ("Update available: v2.1.0" or "Syncthing is up to date"). To actually trigger the upgrade you had to right-click the tray icon → **Check for Updates** and click a second time (the existing tray-menu path posts to `/rest/system/upgrade`). Two surfaces, two clicks, no in-place affordance.
+
+v3.1.0 collapses that into one path: when **Check Now** reports an update available, a small modal dialog opens — visually consistent with the existing GitHub self-updater dialog — showing current version → latest version with an **Upgrade Now** button. Clicking it POSTs to Syncthing's upgrade endpoint, then watches `/rest/system/version` every second until the daemon restarts on the new build (~5–15s typical, 60s ceiling). A toast confirms completion. If the daemon doesn't come back in time, the dialog says so explicitly and points you at the tray icon to verify.
+
+The tray-menu **Check for Updates** path is unchanged — if you've trained your fingers on it, it still works exactly the same way.
+
+### What's underneath
+
+- **`SyncthingUpdateDialog.cs`** (new, ~390 LOC) — dark-themed modal mirroring `UpdateDialog`'s visual baseline, stripped of file-swap/SHA256/rollback machinery (Syncthing handles its own binary swap atomically, so the dialog only needs to track the request and watch for the version flip).
+- **`UpdateDialog.cs`** — new shared `internal static void ShowToast(string)` helper; `ShowUpdateToast()` now delegates to it instead of duplicating the timer+ToastWindow dance. The existing GitHub self-updater dialog also gained a `_busy` synchronous double-click guard for parity (previously `Enabled = false` alone was racy across the message pump — a fast double-click could re-enter the download-and-swap flow).
+- **`SettingsForm.cs`** — **Check Now** handler wired to the new dialog; gained its own double-click guard and replaced two bare `catch` blocks in **Check Config** with typed catches that surface to `tray.log`.
+- **Version-flip detection has two modes.** If Syncthing's upgrade-check response included a `running` field (typical), the poll accepts any version change as success. If it didn't (`running` missing or `"unknown"`), the poll falls back to exact major.minor.patch match against the target — so pre-release suffixes (`v2.1.0-rc.1`) and build metadata (`v2.1.0+12-gabc123`) don't false-timeout the dialog on real Syncthing version strings.
+- **Diagnostics.** The dialog logs every decision point to `tray.log`; if the 60s poll times out, the last observed HTTP status is included (`Last status=401` → bad API key, `Last status=-1` → couldn't reach for the whole window).
+
+### Verifier coverage
+
+- 4 rounds of pair-by-topic verifier swarms (Sonnet + Opus on Diff-clean / Gap-audit / Code-review). Round 1 found 8 issues (use-after-dispose in async-void continuations, missing double-click guards, silent-failing bare catches, magic-string drift across files); Round 2 caught 4 (NormalizeVersion breaking on pre-release tags, `_busy` reset asymmetry); Round 3 caught 1 (`_lastPollStatus` sentinel mismatch); Round 4 caught 1 (a regression the new `_busy` guard introduced on the cancel-during-download path of the existing self-updater). All addressed.
+- Build: 0 warnings, 0 errors. No new MSTest cases (the dialog is a modal WinForms surface — testing it cleanly requires an STA pump and HTTP mocking that the existing test project isn't set up for; the API contract it depends on is stable since Syncthing v1.x).
+- Tested against Syncthing v2.1.0 (currently latest, so no upgrade triggers in practice today). Full end-to-end smoke must wait for the next Syncthing release.
+
 ## v3.0.1 — 2026-05-14
 
 ### Fix: form layout broken at non-100% display scale on Windows 11

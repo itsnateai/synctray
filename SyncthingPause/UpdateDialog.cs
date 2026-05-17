@@ -35,6 +35,15 @@ internal sealed class UpdateDialog : Form
     private int _marqueePos;
     private bool _marqueeForward = true;
 
+    // Synchronous double-click guard for OnActionClick. _btnAction.Enabled = false
+    // alone is racy: WM_COMMAND can queue a second click before WinForms processes
+    // the Enabled property change, which would re-enter the download-and-swap path
+    // — non-idempotent (creates duplicate .new files mid-write, races the SHA256
+    // verify, can corrupt the atomic-rename sequence). _busy flips before any
+    // await so the second click short-circuits. Mirrors the same guard added in
+    // SyncthingUpdateDialog for symmetric resilience across both upgrade dialogs.
+    private bool _busy;
+
     private const string AppName = "SyncthingPause";
     private const string GitHubRepo = "itsnateai/syncthingpause";
 
@@ -357,6 +366,10 @@ internal sealed class UpdateDialog : Form
 
     private async void OnActionClick(object? sender, EventArgs e)
     {
+        // Sync double-click guard fires BEFORE any state mutation or await.
+        // See _busy field docstring for why Enabled=false alone is racy.
+        if (_busy) return;
+        _busy = true;
         _btnAction.Enabled = false;
         _btnCancel.Text = "Cancel";
         _progressOuter.Visible = true;
@@ -466,6 +479,13 @@ internal sealed class UpdateDialog : Form
         catch (TaskCanceledException)
         {
             TryRollback(exePath, oldPath, newPath, null);
+            // Distinct from the IOException/Exception branches above: cancellation
+            // returns the dialog to its version-comparison state (Upgrade Now button
+            // re-shown) rather than ShowError. That means we MUST clear _busy here
+            // — ShowError would have done it, ShowVersionComparison does not. Without
+            // this, the re-shown Upgrade Now button is permanently disabled by the
+            // guard at the top of OnActionClick. Found by Round-4 verifier sweep.
+            _busy = false;
             if (!IsDisposed) ShowVersionComparison();
         }
         catch (Exception ex)
@@ -597,6 +617,13 @@ internal sealed class UpdateDialog : Form
 
     // ─── Error ──────────────────────────────────────────────────
 
+    /// <summary>
+    /// Switch the dialog to an error-display state. Also clears <see cref="_busy"/>
+    /// for symmetry with <c>SyncthingUpdateDialog.ShowError</c>: the download/swap
+    /// flow has terminated, so the busy guard no longer applies. Latent today
+    /// because <c>_btnAction.Visible = false</c> prevents re-click regardless, but
+    /// a future code path that re-shows the button wouldn't inherit a stuck flag.
+    /// </summary>
     private void ShowError(string message, string detail)
     {
         _marqueeTimer.Stop();
@@ -607,6 +634,7 @@ internal sealed class UpdateDialog : Form
         _btnAction.Visible = false;
         _btnCancel.Text = "OK";
         _btnCancel.Location = new Point(170, 112);
+        _busy = false;
     }
 
     // ─── Static Helpers (called from Program.cs) ────────────────
@@ -652,18 +680,25 @@ internal sealed class UpdateDialog : Form
     internal static void ShowUpdateToast()
     {
         var version = Assembly.GetExecutingAssembly().GetName().Version?.ToString(3) ?? "?";
+        ShowToast($"\u2705 {AppName} updated to v{version}!");
+    }
 
-        // Two-stage timing. Stage 1: wait 1.5s after app start so the toast
-        // lands AFTER the tray icon has promoted. Stage 2: ToastWindow shows
-        // itself and self-disposes via FormClosed → Dispose chain, which
-        // cleans the inner dismiss timer and font even if the user Alt-F4s
-        // it or Application.Exit fires mid-flight.
+    /// <summary>
+    /// Show an arbitrary toast in the bottom-right corner. Wraps the same 1.5s-delay
+    /// + self-disposing <see cref="ToastWindow"/> pattern that <see cref="ShowUpdateToast"/>
+    /// uses. Exposed so sibling dialogs (e.g. SyncthingUpdateDialog) can reuse the
+    /// toast UX without duplicating the delay-timer dance or peeking at ToastWindow.
+    /// The 1.5s delay lets the calling dialog finish closing and lets the tray icon
+    /// promote on cold-start paths \u2014 drop it only if you've audited those races.
+    /// </summary>
+    internal static void ShowToast(string message)
+    {
         var delay = new System.Windows.Forms.Timer { Interval = 1500 };
         delay.Tick += (_, _) =>
         {
             delay.Stop();
             delay.Dispose();
-            var toast = new ToastWindow($"\u2705 {AppName} updated to v{version}!");
+            var toast = new ToastWindow(message);
             toast.Show();
         };
         delay.Start();

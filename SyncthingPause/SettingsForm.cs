@@ -465,9 +465,17 @@ internal sealed class SettingsForm : Form
         };
         btnCheckNow.Click += (_, _) =>
         {
+            // Double-click guard: synchronous _api.Get freezes the UI while the
+            // 5s timeout runs, but the click handler is short enough that a fast
+            // user can queue a second click after we return. Disabling for the
+            // duration also prevents stacking two modal SyncthingUpdateDialog
+            // instances if both clicks see newer=true.
+            if (!btnCheckNow.Enabled) return;
+            btnCheckNow.Enabled = false;
             if (string.IsNullOrEmpty(_config.ApiKey))
             {
                 _osd.ShowMessage("API Key required \u2014 set above", 3000);
+                btnCheckNow.Enabled = true;
                 return;
             }
             _osd.ShowMessage("Checking for updates...", 2000);
@@ -484,18 +492,30 @@ internal sealed class SettingsForm : Form
                         // parser would lock onto "latest" inside an unrelated string
                         // value (the same bypass class ParseJsonBool was rewritten
                         // to defeat). 2026-04-25 audit F2.
-                        string ver = "unknown";
+                        string latest = SyncthingUpdateDialog.UnknownVersionSentinel;
+                        string running = SyncthingUpdateDialog.UnknownVersionSentinel;
                         try
                         {
                             using var doc = System.Text.Json.JsonDocument.Parse(body);
-                            if (doc.RootElement.TryGetProperty("latest", out var el) &&
-                                el.ValueKind == System.Text.Json.JsonValueKind.String)
+                            if (doc.RootElement.TryGetProperty("latest", out var lEl) &&
+                                lEl.ValueKind == System.Text.Json.JsonValueKind.String)
                             {
-                                ver = el.GetString() ?? "unknown";
+                                latest = lEl.GetString() ?? SyncthingUpdateDialog.UnknownVersionSentinel;
+                            }
+                            if (doc.RootElement.TryGetProperty("running", out var rEl) &&
+                                rEl.ValueKind == System.Text.Json.JsonValueKind.String)
+                            {
+                                running = rEl.GetString() ?? SyncthingUpdateDialog.UnknownVersionSentinel;
                             }
                         }
-                        catch (System.Text.Json.JsonException) { /* keep ver = "unknown" */ }
-                        _osd.ShowMessage($"Update available: {ver}", 5000);
+                        catch (System.Text.Json.JsonException) { /* keep defaults */ }
+
+                        // Offer the user an explicit upgrade path instead of just an
+                        // OSD. The dialog handles POST /rest/system/upgrade + polling
+                        // for the daemon to come back. Modal so the OSD doesn't race
+                        // with the user clicking again.
+                        using var dlg = new SyncthingUpdateDialog(_api, running, latest);
+                        dlg.ShowDialog(this);
                     }
                     else
                     {
@@ -507,9 +527,17 @@ internal sealed class SettingsForm : Form
                     _osd.ShowMessage($"Check failed (HTTP {status})", 3000);
                 }
             }
-            catch
+            catch (Exception ex)
             {
+                // Surface to logs — previously a bare-catch swallowed every type
+                // (OperationCanceledException, OutOfMemoryException, real bugs)
+                // and reduced them all to one identical OSD with no diagnostics.
+                TrayLog.Warn($"Check Now threw {ex.GetType().Name}: {ex.Message}");
                 _osd.ShowMessage("Could not reach Syncthing API", 3000);
+            }
+            finally
+            {
+                btnCheckNow.Enabled = true;
             }
         };
         Controls.Add(btnCheckNow);
@@ -667,8 +695,13 @@ internal sealed class SettingsForm : Form
                     ? "\u2713 API: Connected (HTTP 200)\r\n"
                     : $"\u2717 API: HTTP {status}\r\n";
             }
-            catch
+            catch (Exception ex)
             {
+                // Surface to logs even though the user-visible OSD stays terse.
+                // Previously a bare catch swallowed every type with no diagnostics,
+                // which made it impossible to distinguish "daemon not running" from
+                // a real bug in the OSD path.
+                TrayLog.Warn($"OnCheckConfig API probe threw {ex.GetType().Name}: {ex.Message}");
                 results += "\u2717 API: Unreachable\r\n";
             }
 
@@ -683,7 +716,13 @@ internal sealed class SettingsForm : Form
                     results += $"  Discovery: Global={gd} Local={ld} NAT={rl}\r\n";
                 }
             }
-            catch { /* best-effort */ }
+            catch (Exception ex)
+            {
+                // Best-effort: this is the second probe in a diagnostic-only flow,
+                // and the first probe's failure already surfaced. Log for parity
+                // with the catch above; don't add a second OSD line.
+                TrayLog.Warn($"OnCheckConfig options probe threw {ex.GetType().Name}: {ex.Message}");
+            }
         }
 
         _osd.ShowMessage(results.Replace("\r\n", " | ").TrimEnd(' ', '|'), 5000);
