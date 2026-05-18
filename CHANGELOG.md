@@ -4,6 +4,38 @@
 
 All notable changes to SyncthingPause (formerly SyncthingTray, renamed at v3.0.0) are documented here.
 
+## v3.2.3 — 2026-05-18
+
+### Fix: AddSectionHeader divider mixed-DPI math + cleanups
+
+Verifier pass on v3.2.2 surfaced one residual mixed-DPI bug: `AddSectionHeader` measures the section-header label width with `TextRenderer.MeasureText` (returns device-px at the form's current DPI), adds it to the design-px `x` parameter and a `+ 4` design-px gap, then passes the result to `AddDivider`, whose `Location`/`Size` autoscale on `Controls.Add`. The device-px width gets double-counted by the autoscale ratio — at 125% DPI the divider lands ~25% of the label width further right than intended, producing visibly misaligned section dividers under the "General", "Paths", "API", "Discovery", "Updates" headers. Same mixed-DPI anti-pattern v3.2.2 claimed to eliminate; v3.2.2's scope was the buttons + NUD + checkbox widths, not the section-header layout — so this one survived. Fix converts the MeasureText result back to design-px via `*(96.0/DeviceDpi)` before mixing with the design-px constants.
+
+### Cleanups
+
+Verifier also surfaced two minor inconsistencies introduced by the v3.2.2 helper refactor:
+
+- `Controls.Add(btnCheckNow)` at the end of `BuildUpdatesSection` was redundant — `AddSizedButton` already calls `Controls.Add` internally. WinForms silently no-ops a duplicate add to the same parent, so the bug was harmless, but the call was inconsistent with the other five `AddSizedButton` callers (which correctly omit the second add).
+- `AddLabel("seconds", 248, y, ...)` in `BuildGeneralSection` passed `x=248` as a leftover from the pre-anchor pattern; the real `Location` is assigned on the next line from `_nudDelay.Right + LogicalToDeviceUnits(6)`. Replaced `248` with `0` to match the placeholder convention used for `btnSyncthing` in `BuildButtonRow`.
+
+### Known limitations (not fixed in v3.2.3)
+
+Verifier flagged three concerns that are structural / scope-creep rather than v3.2.x regressions, captured here for the record:
+
+1. **PerMonitorV2 cross-monitor drag.** The csproj declares `ApplicationHighDpiMode=PerMonitorV2` but `SettingsForm` has no `OnDpiChanged` override. Every post-`Controls.Add` `Location` assignment (every button in this dialog, plus the NUD + reveal eye + Theme radios) holds physical-px values captured at the source monitor's DPI; if the form is dragged to a monitor at a different DPI mid-session, WinForms scales the form chrome but the manually-set Locations don't re-derive. Will need a separate fix that re-runs the position-chaining math on `OnDpiChanged`. Not a regression vs pre-v3.2.2 — the existing form had the same blind spot.
+2. **150-200% DPI scale untested empirically.** The fix was validated on 100% (Asus) and reported against 125% (Suzy). The hand-tuned button widths chose 25-40% chrome margin around the measured text, which should fit at 200% with the linearity assumption of `AutoScaleMode.Dpi`, but Segoe UI hinting can produce non-linear glyph widening at certain scale jumps. No 175%/200% smoke yet.
+3. **Localization.** All Button `Text` values are hardcoded English. Long localized strings (German "Verbindung wird geprüft" for "Check Now", "Konfiguration prüfen" for "Check Config") would clip in their fixed-width buttons. Out of scope for v3.2.x — the app is English-only.
+
+### What's underneath
+
+- **`SettingsForm.cs · AddSectionHeader`** — divider math fixed; `TextRenderer.MeasureText(text, _sectionFont).Width` is now divided by `DeviceDpi/96.0` before being added to design-px `x` and the `+ 4` gap.
+- **`SettingsForm.cs · BuildUpdatesSection`** — redundant `Controls.Add(btnCheckNow)` removed.
+- **`SettingsForm.cs · BuildGeneralSection`** — `AddLabel("seconds", 248, ...)` → `AddLabel("seconds", 0, ...)`.
+- **`SyncthingPause.csproj`** — 3.2.2 → 3.2.3.
+
+### Verifier coverage
+
+92/92 tests pass. Build clean (0 warnings, 0 errors). Self-contained single-file publish deployed to `C:\Users\nate\proggy\Tools\syncthingpause\SyncthingPause.exe` (v3.2.0 backed up as `.v320.bak`). Visual smoke at 100% on Asus confirmed; the section-header divider fix is most visible at 125%+ where pre-v3.2.3 the dividers under "General"/"Paths"/etc. drifted to the right.
+
 ## v3.2.2 — 2026-05-18
 
 ### Fix: Settings dialog clipping on 125%+ DPI displays

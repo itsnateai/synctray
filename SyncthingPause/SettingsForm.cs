@@ -219,7 +219,10 @@ internal sealed class SettingsForm : Form
             lblDelay.Right + LogicalToDeviceUnits(8),
             lblDelay.Top - LogicalToDeviceUnits(2));
 
-        var lblSeconds = AddLabel("seconds", 248, y, 0, _normalFont, DimColor);
+        // v3.2.3: x=0 is a placeholder — the real Location is assigned on the
+        // next line off _nudDelay.Right post-autoscale. Passing 248 here was
+        // dead data left over from the pre-anchor pattern.
+        var lblSeconds = AddLabel("seconds", 0, y, 0, _normalFont, DimColor);
         lblSeconds.Location = new Point(
             _nudDelay.Right + LogicalToDeviceUnits(6),
             lblDelay.Top);
@@ -688,7 +691,10 @@ internal sealed class SettingsForm : Form
                 if (!_disposed && !IsDisposed) btnCheckNow.Enabled = true;
             }
         };
-        Controls.Add(btnCheckNow);
+        // v3.2.3: AddSizedButton already calls Controls.Add internally. A second
+        // Controls.Add(btnCheckNow) here was harmless (WinForms silently no-ops
+        // duplicate adds to the same parent) but inconsistent with the other
+        // five AddSizedButton callers and confusing for readers.
         y += 30;
 
         AddDivider(0, y, sw);
@@ -1368,8 +1374,15 @@ internal sealed class SettingsForm : Form
     {
         y += 4;
         var lbl = AddLabel(text, x, y, 0, _sectionFont, DimColor); // AutoSize
-        int labelWidth = TextRenderer.MeasureText(text, _sectionFont).Width;
-        int labelEnd = x + labelWidth + 4;
+        // v3.2.3: TextRenderer.MeasureText returns device-px at the form's current
+        // DeviceDpi. Mixing it with x/sw design-px and feeding the result to
+        // AddDivider (whose Location/Size autoscale on Controls.Add) double-counted
+        // the DPI ratio — the divider drifted right by ~25% of labelWidth at 125%
+        // DPI. Convert the measurement back to design-px before mixing so the
+        // subsequent autoscale lands the divider at the intended physical px.
+        int labelWidthDevice = TextRenderer.MeasureText(text, _sectionFont).Width;
+        int labelWidthDesign = (int)Math.Ceiling(labelWidthDevice * 96.0 / DeviceDpi);
+        int labelEnd = x + labelWidthDesign + 4;
         AddDivider(labelEnd, y + 7, sw - labelEnd - 10);
         y += 20;
     }
