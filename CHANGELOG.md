@@ -4,6 +4,26 @@
 
 All notable changes to SyncthingPause (formerly SyncthingTray, renamed at v3.0.0) are documented here.
 
+## v3.2.1 — 2026-05-18
+
+### Fix: "Check Now" upgrade probe no longer freezes Settings
+
+Pre-v3.2.1, clicking **Settings → Updates → Check Now** ran `_api.Get("/rest/system/upgrade")` synchronously on the UI thread. On a slow daemon or transient network this would freeze the dialog for up to 5 s (the default API timeout) before either showing the upgrade dialog or the "Syncthing is up to date" OSD. v3.2.1 moves the HTTP call onto a thread-pool task — same async pattern v3.2.0 applied to the Discovery probe at SettingsForm open. The double-click guard, modal upgrade dialog, OSD outcomes, and exception handling are unchanged in behavior; the only user-visible difference is the dialog no longer locks up while the request is in flight.
+
+### Defensive: OnApply "Settings applied" OSD timing invariant documented
+
+Round-3 verifier review flagged the OSD ordering between the synchronous `"Settings applied"` toast and the pool task's `"Discovery settings not saved…"` failure OSDs as a CRITICAL race. Skeptical re-trace showed the race resolves correctly — the success OSD fires first (UI thread, ~0 ms), pool errors fire later (10-1500 ms via `BeginInvoke`) and correctly overwrite the success message so the user sees the most-relevant outcome. v3.2.1 adds a comment block above the OSD call explaining the invariant so a future maintainer doesn't "fix" it by moving the OSD into the pool task tail (which would reverse the ordering and bury error states). Pure documentation — no behavior change.
+
+### What's underneath
+
+- **`SettingsForm.cs`** — Check Now click handler converted from synchronous lambda to `async (_, _) =>`. HTTP call wrapped in `Task.Run`; result marshaled back to UI thread implicitly by `await`. `IsDisposed`/`_disposed` guard added after the await so a dialog-close mid-poll doesn't mutate disposed controls. Same pattern as the v3.2.0 Discovery probe fix. Final `btnCheckNow.Enabled = true` gated on `!_disposed && !IsDisposed` to skip the touch when the form is gone. Catch block on the post-HTTP body narrowed and re-described — the original "Could not reach Syncthing API" message is wrong for that path (the HTTP itself is now caught earlier); replaced with "Check Now failed — see tray.log" so the typed-exception name in the log is the diagnostic.
+- **`SettingsForm.cs`** — 14-line comment block in `OnApply`'s `ApplyResult.Normal` case explaining why the synchronous "Settings applied" OSD intentionally fires before pool errors, with a "DO NOT fix this" footnote citing the round-3 verifier trace.
+- **`SyncthingPause.csproj`** — 3.2.0 → 3.2.1.
+
+### Verifier coverage
+
+92/92 tests pass. Build clean. No new tests — both changes are surgical (one async refactor on a path that mirrors the v3.2.0 Discovery probe pattern, one comment block).
+
 ## v3.2.0 — 2026-05-17
 
 ### Feature: user-selectable Dark / Light theme

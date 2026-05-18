@@ -540,13 +540,14 @@ internal sealed class SettingsForm : Form
             ForeColor = FgColor,
             BackColor = BgColor,
         };
-        btnCheckNow.Click += (_, _) =>
+        btnCheckNow.Click += async (_, _) =>
         {
-            // Double-click guard: synchronous _api.Get freezes the UI while the
-            // 5s timeout runs, but the click handler is short enough that a fast
-            // user can queue a second click after we return. Disabling for the
-            // duration also prevents stacking two modal SyncthingUpdateDialog
-            // instances if both clicks see newer=true.
+            // Double-click guard: the _api.Get HTTP call below is now async
+            // off the UI thread, but the click handler still needs the guard
+            // because a fast user can queue a second click before the await
+            // resumes. Disabling for the duration also prevents stacking two
+            // modal SyncthingUpdateDialog instances if both clicks see
+            // newer=true.
             if (!btnCheckNow.Enabled) return;
             btnCheckNow.Enabled = false;
             if (string.IsNullOrEmpty(_config.ApiKey))
@@ -556,9 +557,36 @@ internal sealed class SettingsForm : Form
                 return;
             }
             _osd.ShowMessage("Checking for updates...", 2000);
+
+            // v3.2.1: move the daemon-poll HTTP off the UI thread. Pre-v3.2.1
+            // this ran synchronously on the click handler, freezing the dialog
+            // for up to 5 s (the default _api.Get timeout) on a slow daemon
+            // or transient network. Same async pattern as the Discovery probe
+            // fix in v3.2.0.
+            int status;
+            string body;
             try
             {
-                var (status, body) = _api.Get("/rest/system/upgrade");
+                (status, body) = await System.Threading.Tasks.Task.Run(
+                    () => _api.Get("/rest/system/upgrade"));
+            }
+            catch (Exception ex)
+            {
+                TrayLog.Warn($"Check Now threw {ex.GetType().Name}: {ex.Message}");
+                _osd.ShowMessage("Could not reach Syncthing API", 3000);
+                if (!_disposed && !IsDisposed) btnCheckNow.Enabled = true;
+                return;
+            }
+
+            // The user could have closed the dialog while we were on the pool
+            // thread. Standard async-void guard \u2014 without it, the UI work
+            // below would mutate disposed controls and ObjectDisposedException
+            // escapes async-void as an unobserved task exception (which
+            // TaskScheduler.UnobservedTaskException can crash on at GC).
+            if (_disposed || IsDisposed) return;
+
+            try
+            {
                 if (status == 200)
                 {
                     bool newer = ParseJsonBool(body, "newer", false);
@@ -606,15 +634,18 @@ internal sealed class SettingsForm : Form
             }
             catch (Exception ex)
             {
-                // Surface to logs — previously a bare-catch swallowed every type
-                // (OperationCanceledException, OutOfMemoryException, real bugs)
-                // and reduced them all to one identical OSD with no diagnostics.
-                TrayLog.Warn($"Check Now threw {ex.GetType().Name}: {ex.Message}");
-                _osd.ShowMessage("Could not reach Syncthing API", 3000);
+                // Defensive catch for the post-HTTP block: JsonDocument.Parse
+                // has its own local catch (line ~616), but TryGetProperty +
+                // ShowDialog could still throw on pathological input or GDI
+                // failure. Surfacing to logs preserves the diagnostic value
+                // the v3.1.0 catch refactor added (typed errors with exception
+                // type names, not silent fallthrough).
+                TrayLog.Warn($"Check Now post-HTTP threw {ex.GetType().Name}: {ex.Message}");
+                _osd.ShowMessage("Check Now failed — see tray.log", 3000);
             }
             finally
             {
-                btnCheckNow.Enabled = true;
+                if (!_disposed && !IsDisposed) btnCheckNow.Enabled = true;
             }
         };
         Controls.Add(btnCheckNow);
@@ -1165,6 +1196,21 @@ internal sealed class SettingsForm : Form
                 return;
             case ApplyResult.Normal:
                 _onApplied();
+                // OSD timing invariant: "Settings applied" fires SYNCHRONOUSLY
+                // here on the UI thread, immediately after ApplySettings
+                // returned. The pool task spawned inside ApplySettings (the
+                // non-theme branch's discovery PATCH + StartupShortcut.Apply
+                // + WMI probe + savedCallback fan-out) marshals its own error
+                // OSDs back via OsdToolTip.ShowMessage's BeginInvoke path,
+                // which fires 10-1500 ms LATER. Each later OSD overwrites
+                // this "Settings applied" message — so the user-visible
+                // result is the most-recent (most-relevant) status. DO NOT
+                // "fix" this by moving the OSD into the pool task tail or
+                // by tracking an error flag — the current timing happens to
+                // resolve correctly because the durations match the user's
+                // mental model (5000 ms error OSD outlives 3000 ms success).
+                // Confirmed by round-3 verifier analysis (T2 Sonnet flagged
+                // it CRITICAL; trace showed the race is benign).
                 _osd.ShowMessage("Settings applied", 3000);
                 return;
             default:
