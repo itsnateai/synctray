@@ -63,7 +63,7 @@ internal sealed class SettingsForm : Form
     private static readonly Color ComboSelectedBgColor = Theme.ComboSelectedBg;
     private static readonly Color WarnLabelColor = Theme.FgDisabled;
 
-    // CLAUDE.md: cache GDI in paint paths — combo item draw fires per item per paint.
+    // Convention: cache GDI in paint paths — combo item draw fires per item per paint.
     private static readonly SolidBrush ComboBgBrush = new(EditBgColor);
     private static readonly SolidBrush ComboSelectedBrush = new(ComboSelectedBgColor);
 
@@ -1263,7 +1263,7 @@ internal sealed class SettingsForm : Form
                 // by tracking an error flag — the current timing happens to
                 // resolve correctly because the durations match the user's
                 // mental model (5000 ms error OSD outlives 3000 ms success).
-                // Confirmed by round-3 verifier analysis (T2 Sonnet flagged
+                // Confirmed by round-3 verifier analysis (verifier flagged
                 // it CRITICAL; trace showed the race is benign).
                 _osd.ShowMessage("Settings applied", 3000);
                 return;

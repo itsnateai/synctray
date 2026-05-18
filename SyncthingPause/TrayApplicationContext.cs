@@ -244,7 +244,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
 
         _osd = new OsdToolTip();
 
-        // Win11 tray-icon hygiene. Snippet: _.claude/_templates/snippets/csharp/tray-icon-promoter.md.
+        // Win11 tray-icon hygiene.
         // Sweep first (zombies from prior versioned WinGet installs / single-file extraction caches),
         // then capture the baseline so Phase-2 orphan claim has a "before NIM_ADD" reference.
         TrayIconPromoter.SweepStaleEntries(
@@ -3210,7 +3210,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
                 CreateNoWindow = true,
             };
             // Limit Syncthing's Go runtime to 2 OS threads — reduces memory/CPU
-            // footprint on a machine already running Claude, Docker, Semgrep, etc.
+            // footprint on a machine already running multiple developer tools.
             psi.Environment["GOMAXPROCS"] = "2";
             // `using` so a throw on .Id (process exited between Start and the Id
             // read — rare, but observed on slow-disk + corrupt-exe combinations)
@@ -3520,7 +3520,7 @@ internal sealed class TrayApplicationContext : ApplicationContext
         base.Dispose(disposing);
     }
 
-    // --- TrayIconPromoter plumbing (snippet: _.claude/_templates/snippets/csharp/tray-icon-promoter.md) ---
+    // --- TrayIconPromoter plumbing ---
 
     /// <summary>
     /// Drive the promoter's retry timer until our subkey is identified or the

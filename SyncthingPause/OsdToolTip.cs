@@ -18,7 +18,7 @@ internal sealed class OsdToolTip : Form
     private static readonly Color BgColor = Theme.Bg;
     private static readonly Color FgColor = Theme.Fg;
 
-    // CLAUDE.md: "Cached GDI objects in renderers (no allocation in paint paths)"
+    // Convention: cache GDI in renderers — no allocation in paint paths.
     // OSD repaints on every show — keep the border Pen process-lifetime.
     private static readonly Pen BorderPen = new(Theme.OsdBorder, 1);
 

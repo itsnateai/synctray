@@ -29,7 +29,7 @@ internal sealed class AppConfig
 
     /// <summary>
     /// Opt-in: every other user-facing surface (README, CHANGELOG, HelpForm,
-    /// CLAUDE.md, TrayLog docstring) advertises this as opt-in via
+    /// TrayLog docstring) advertises this as opt-in via
     /// `DiagnosticLogging=1`. Shipping a default of `true` contradicted the
     /// consent model; v2.2.34 flipped this to `false` so the promise matches
     /// the behaviour. Existing users who opened Settings at least once already
