@@ -115,7 +115,13 @@ internal sealed class SettingsForm : Form
         BuildUpdatesSection(ref y, sw);
         BuildButtonRow(ref y, sw);
 
-        y += 40;
+        // v3.2.2: was y += 40 — bumped to 48 to give the bottom-row buttons
+        // a touch more breathing room below their descenders. At 125% DPI on
+        // some configs the previous 40 design-px (50 physical) put the bottom
+        // edge of the form too close to the buttons, visually clipping the
+        // lower stroke of glyphs like 'g' and 'p'. 48 design-px (60 physical)
+        // restores the proportions seen at 100% scale.
+        y += 48;
         ClientSize = new Size(sw, y);
 
         // First-run auto-open can land behind a fullscreen app (game, video) since
@@ -176,10 +182,21 @@ internal sealed class SettingsForm : Form
         // for the network stack and other boot services to settle before firing
         // Syncthing. NumericUpDown lets the user spin in 5-second steps or type
         // any value in [0, 3600] directly.
-        AddLabel("Windows startup delay:", 16, y, 0, _normalFont, DimColor);
+        //
+        // v3.2.2: NUD is anchored off the label's autoscaled Right edge rather
+        // than a fixed x=160 design literal. At 125% DPI, "Windows startup delay:"
+        // measured ~169 physical-px starting at x=20, ending at ~189 — overflowing
+        // the NUD's autoscaled x=200 by enough that the label's "delay" text was
+        // visually rendering on top of (or to the right of) the NUD position,
+        // making the NUD appear as if it had been pushed below the label. Anchor
+        // pattern: get label.Right (physical-px post-autoscale), add a design-px
+        // gap converted via LogicalToDeviceUnits. The "seconds" label uses the
+        // same NUD-relative anchor for symmetry. See MicMute v2.1.x fix for the
+        // same anti-pattern (mixing live-DPI edges with design literals).
+        var lblDelay = AddLabel("Windows startup delay:", 16, y, 0, _normalFont, DimColor);
         _nudDelay = new NumericUpDown
         {
-            Location = new Point(160, y - 2),
+            Location = new Point(160, y - 2), // placeholder, repositioned post-Add below
             // Width=60 worked at 100% DPI but clipped digits at 125% — NumericUpDown's
             // spinner band scales independently of the parent at non-100% scale (well-
             // known WinForms quirk), eating ~25px and leaving no room for 4-digit values.
@@ -198,7 +215,14 @@ internal sealed class SettingsForm : Form
             AccessibleName = "Windows startup delay in seconds",
         };
         Controls.Add(_nudDelay);
-        AddLabel("seconds", 248, y, 0, _normalFont, DimColor);
+        _nudDelay.Location = new Point(
+            lblDelay.Right + LogicalToDeviceUnits(8),
+            lblDelay.Top - LogicalToDeviceUnits(2));
+
+        var lblSeconds = AddLabel("seconds", 248, y, 0, _normalFont, DimColor);
+        lblSeconds.Location = new Point(
+            _nudDelay.Right + LogicalToDeviceUnits(6),
+            lblDelay.Top);
         y += 30;
     }
 
@@ -208,34 +232,28 @@ internal sealed class SettingsForm : Form
 
         AddLabel("Syncthing:", 16, y, 0, _normalFont, DimColor);
         _edSyncExe = AddTextBox(90, y - 2, 220, _config.SyncExe, true, accessibleName: "Syncthing executable path");
-        var btnBrowse = new Button
-        {
-            Text = "...",
-            Font = _btnFont,
-            Location = new Point(314, y - 3),
-            Size = new Size(50, 26),
-            FlatStyle = FlatStyle.Flat,
-            ForeColor = FgColor,
-            BackColor = BgColor,
-            AccessibleName = "Browse for syncthing.exe",
-        };
+        // v3.2.2: width=32 (was 50) — "..." text is only ~8 design-px wide, so
+        // 32 design-px gives 24px chrome margin (12 each side) for a balanced
+        // ellipsis button at 100%. Scales to 40 physical-px at 125% — still
+        // tight around three dots, visually integrated with the textbox.
+        var btnBrowse = AddSizedButton("...", 32);
+        btnBrowse.AccessibleName = "Browse for syncthing.exe";
+        btnBrowse.Location = new Point(
+            _edSyncExe.Right + LogicalToDeviceUnits(4),
+            _edSyncExe.Top - LogicalToDeviceUnits(1));
         btnBrowse.Click += OnBrowseSyncExe;
-        Controls.Add(btnBrowse);
         y += 28;
 
         AddLabel("Web UI:", 16, y, 0, _normalFont, DimColor);
         _edWebUI = AddTextBox(90, y - 2, 220, _config.WebUI, true, accessibleName: "Syncthing Web UI URL");
-        var btnOpenWebUI = new Button
-        {
-            Text = "Open",
-            Font = _btnFont,
-            Location = new Point(314, y - 3),
-            Size = new Size(50, 26),
-            FlatStyle = FlatStyle.Flat,
-            ForeColor = FgColor,
-            BackColor = BgColor,
-            AccessibleName = "Open Web UI in browser",
-        };
+        // v3.2.2: width=54 (was 50 → "Ope" clip at 125%). "Open" measures ~28
+        // design-px; 54 gives 26 chrome margin (13 each side). At 125% physical
+        // = 67 px button vs 35 px text — comfortable.
+        var btnOpenWebUI = AddSizedButton("Open", 54);
+        btnOpenWebUI.AccessibleName = "Open Web UI in browser";
+        btnOpenWebUI.Location = new Point(
+            _edWebUI.Right + LogicalToDeviceUnits(4),
+            _edWebUI.Top - LogicalToDeviceUnits(1));
         btnOpenWebUI.Click += (_, _) =>
         {
             var url = _edWebUI.Text.Trim();
@@ -255,7 +273,6 @@ internal sealed class SettingsForm : Form
                 TrayLog.Warn("SettingsForm OpenWebUI failed: " + ex.Message);
             }
         };
-        Controls.Add(btnOpenWebUI);
         y += 30;
     }
 
@@ -275,8 +292,11 @@ internal sealed class SettingsForm : Form
             // These render inside the password-toggle glyph set used across Win10/11.
             Text = "\uE7B3",
             Font = _iconFont,
-            Location = new Point(310, y - 2),
-            Size = new Size(52, 26),
+            // v3.2.2: width=40 (was 52) — single Segoe MDL2 glyph is ~14 design-px;
+            // 40 design-px gives 26px chrome margin (13 each side) for a tight,
+            // icon-sized button. AutoScaleMode.Dpi scales to 50 physical at 125%.
+            Location = new Point(0, 0), // placeholder, repositioned post-Add below
+            Size = new Size(40, 26),
             FlatStyle = FlatStyle.Flat,
             ForeColor = FgColor,
             BackColor = EditBgColor,
@@ -294,6 +314,12 @@ internal sealed class SettingsForm : Form
             btnReveal.Text = _edApiKey.UseSystemPasswordChar ? "\uE7B3" : "\uE7B4";
         };
         Controls.Add(btnReveal);
+        // v3.2.2: anchor off the textbox's autoscaled Right edge so the reveal
+        // icon stays adjacent at every DPI. LogicalToDeviceUnits converts the
+        // design-px gap to physical-px to match _edApiKey.Right's pixel space.
+        btnReveal.Location = new Point(
+            _edApiKey.Right + LogicalToDeviceUnits(4),
+            _edApiKey.Top - LogicalToDeviceUnits(1));
 
         y += 30;
     }
@@ -323,11 +349,16 @@ internal sealed class SettingsForm : Form
         // lines tall on the right side of the section.
         int themeLabelY = y;
         _cbGlobal = AddCheckBox("Global Discovery", 16, y, false);
-        _cbGlobal.Width = 200;
+        // v3.2.2: AddCheckBox sets Width=320 design-px, autoscaled on Controls.Add.
+        // Assigning a raw literal here AFTER Add overwrites the scaled width with
+        // a design-px value at runtime (200 physical-px at 125% DPI instead of the
+        // intended 250). Convert via LogicalToDeviceUnits so the override stays
+        // proportional. Same fix at line ~330 (_cbLocal) and ~532 (_cbAutoUpdates).
+        _cbGlobal.Width = LogicalToDeviceUnits(200);
         y += 24;
         int themeRadioY = y;
         _cbLocal = AddCheckBox("Local Discovery", 16, y, false);
-        _cbLocal.Width = 200;
+        _cbLocal.Width = LogicalToDeviceUnits(200);
         y += 24;
         _cbRelay = AddCheckBox("NAT Traversal (Relaying)", 16, y, false);
         y += 24;
@@ -437,9 +468,19 @@ internal sealed class SettingsForm : Form
             // beyond "boxes are mysteriously disabled."
             if (_discoveryWarnLabel == null || _discoveryWarnLabel.IsDisposed)
             {
+                // v3.2.2: AddLabel takes (x, y) in design-px and autoscales them
+                // on Controls.Add. _cbRelay.Bottom is already physical-px (post-
+                // autoscale), so passing it as the y argument double-scales it
+                // (at 125% the label would land ~31% below the relay checkbox
+                // instead of immediately under it). Pass 0 as placeholder, then
+                // set Location in physical-px afterward — convert the 36 x-offset
+                // and the 4 gap via LogicalToDeviceUnits to stay proportional.
                 _discoveryWarnLabel = AddLabel(
                     "(Syncthing unreachable — reopen Settings to retry)",
-                    36, _cbRelay.Bottom + 4, 320, _subFont, WarnLabelColor);
+                    0, 0, 320, _subFont, WarnLabelColor);
+                _discoveryWarnLabel.Location = new Point(
+                    LogicalToDeviceUnits(36),
+                    _cbRelay.Bottom + LogicalToDeviceUnits(4));
             }
             else
             {
@@ -529,17 +570,16 @@ internal sealed class SettingsForm : Form
         AddSectionHeader("Updates", 16, ref y, sw);
 
         _cbAutoUpdates = AddCheckBox("Check for Syncthing updates (daily)", 16, y, _config.AutoCheckUpdates);
-        _cbAutoUpdates.Width = 220;
-        var btnCheckNow = new Button
-        {
-            Text = "Check Now",
-            Font = _btnFont,
-            Location = new Point(240, y - 2),
-            Size = new Size(90, 26),
-            FlatStyle = FlatStyle.Flat,
-            ForeColor = FgColor,
-            BackColor = BgColor,
-        };
+        // v3.2.2: see _cbGlobal.Width comment — design-px literal must be converted
+        // to physical-px via LogicalToDeviceUnits when overriding an autoscaled Width.
+        _cbAutoUpdates.Width = LogicalToDeviceUnits(220);
+        // v3.2.2: width=92 (was 90) — "Check Now" is ~56 design-px; 92 gives
+        // 36px chrome margin (18 each side). Anchored off the checkbox's
+        // autoscaled Right edge using LogicalToDeviceUnits gap.
+        var btnCheckNow = AddSizedButton("Check Now", 92);
+        btnCheckNow.Location = new Point(
+            _cbAutoUpdates.Right + LogicalToDeviceUnits(10),
+            _cbAutoUpdates.Top - LogicalToDeviceUnits(2));
         btnCheckNow.Click += async (_, _) =>
         {
             // Double-click guard: the _api.Get HTTP call below is now async
@@ -657,67 +697,53 @@ internal sealed class SettingsForm : Form
 
     private void BuildButtonRow(ref int y, int sw)
     {
-        // Both rows are laid out to start at x=16 (left margin) and end at x=394
-        // (right margin 16 = left margin, form width 410). Previously the top row
-        // ended at 384 and the bottom row ended at 370, giving asymmetric
-        // whitespace on the right and misalignment between the two rows.
+        // v3.2.2: top row buttons keep their hand-tuned fixed-Size shape (Size
+        // = new Size(w, 26)) but two were too tight pre-v3.2.2 — Syncthing(68)
+        // clipped to "Syncthi" at 125% DPI and Check Config(100) clipped to
+        // "Check Confi" on the same display. Bumped Syncthing 68 → 82 and
+        // Check Config 100 → 98 with the chrome margin balanced across the
+        // row so the whole top row reads with a uniform visual rhythm.
+        // Positions chain off the prior button's autoscaled Right edge using
+        // LogicalToDeviceUnits(BtnGap) so device-px and design-px don't get
+        // mixed in the same expression (the MicMute v2.1.x anti-pattern).
         //
-        // Top row: GitHub(68) | Update(58) | Syncthing(68) | Help(58) | Check Config(100)
-        //   = 352 px of buttons, 4 gaps, flows to end at 394.
-        // Bottom row: Save(114) | Apply(114) | Cancel(114)
-        //   = 342 px of buttons, 2 × 18 px gaps, flows to end at 394.
+        // Bottom row: Save(114) | Apply(114) | Cancel(114) stays at fixed widths
+        // — 114 design-px is wide enough for 6-char "Cancel" at 9pt Segoe UI
+        // even at 200% DPI, and the trio's symmetry depends on uniform width.
 
-        AddLinkButton("GitHub", 16, y, 68, "https://github.com/itsnateai/syncthingpause");
+        // Hand-tuned widths (design-px) chosen with ~24-32 px chrome margin
+        // around the measured text — uniform visual rhythm at 100%, enough
+        // slack that DPI auto-scaling at 125-200% never clips.
+        //   16 (margin) + GitHub(72) + Update(62) + Syncthing(82) + Help(52)
+        //                + Check Config(98) + 4*BtnGap(5) = 402, leaves 8px
+        //                right margin at sw=410.
+        const int BtnGap = 5;
 
-        var btnUpdate = new Button
-        {
-            Text = "Update",
-            Font = _btnFont,
-            Location = new Point(90, y),
-            Size = new Size(58, 26),
-            FlatStyle = FlatStyle.Flat,
-            ForeColor = FgColor,
-            BackColor = BgColor,
-        };
+        var btnGitHub = AddLinkButton("GitHub", 16, y, 72, "https://github.com/itsnateai/syncthingpause");
+
+        var btnUpdate = AddSizedButton("Update", 62);
+        btnUpdate.Location = new Point(btnGitHub.Right + LogicalToDeviceUnits(BtnGap), btnGitHub.Top);
         btnUpdate.Click += (_, _) =>
         {
             using var dlg = new UpdateDialog();
             dlg.ShowDialog(this);
         };
-        Controls.Add(btnUpdate);
 
-        AddLinkButton("Syncthing", 154, y, 68, "https://github.com/syncthing/syncthing");
+        var btnSyncthing = AddLinkButton("Syncthing", 0, y, 82, "https://github.com/syncthing/syncthing");
+        btnSyncthing.Location = new Point(btnUpdate.Right + LogicalToDeviceUnits(BtnGap), btnGitHub.Top);
 
-        var btnHelp = new Button
-        {
-            Text = "Help",
-            Font = _btnFont,
-            Location = new Point(228, y),
-            Size = new Size(58, 26),
-            FlatStyle = FlatStyle.Flat,
-            ForeColor = FgColor,
-            BackColor = BgColor,
-        };
+        var btnHelp = AddSizedButton("Help", 52);
+        btnHelp.Location = new Point(btnSyncthing.Right + LogicalToDeviceUnits(BtnGap), btnGitHub.Top);
         btnHelp.Click += (_, _) =>
         {
             using var hf = new HelpForm(_config.SettingsFilePath, (msg, ms) => _osd.ShowMessage(msg, ms));
             hf.ShowDialog(this);
         };
-        Controls.Add(btnHelp);
 
-        var btnCheck = new Button
-        {
-            Text = "Check Config",
-            Font = _btnFont,
-            Location = new Point(294, y),
-            Size = new Size(100, 26),
-            FlatStyle = FlatStyle.Flat,
-            ForeColor = FgColor,
-            BackColor = BgColor,
-            AccessibleName = "Check Config",
-        };
+        var btnCheck = AddSizedButton("Check Config", 98);
+        btnCheck.Location = new Point(btnHelp.Right + LogicalToDeviceUnits(BtnGap), btnGitHub.Top);
+        btnCheck.AccessibleName = "Check Config";
         btnCheck.Click += OnCheckConfig;
-        Controls.Add(btnCheck);
         y += 34;
 
         var btnSave = new Button
@@ -1348,7 +1374,17 @@ internal sealed class SettingsForm : Form
         y += 20;
     }
 
-    private void AddLinkButton(string text, int x, int y, int w, string url)
+    /// <summary>
+    /// Fixed-size variant — caller supplies the design-px width, which the form's
+    /// AutoScaleMode.Dpi walk scales up at runtime. AutoSize was tried in v3.2.2's
+    /// first draft but Button.AutoSize with custom Padding stacks on top of the
+    /// Button's internal chrome margin and produces oversized buttons (taller than
+    /// adjacent textboxes, wider than the hand-tuned widths the form has shipped
+    /// against since v2.0). Hand-tuning the width per button gives uniform visual
+    /// rhythm at 100% scale and the AutoScaleMode walk handles the rest.
+    /// Returns the button so callers can chain Location off the autoscaled Right.
+    /// </summary>
+    private Button AddLinkButton(string text, int x, int y, int w, string url)
     {
         var btn = new Button
         {
@@ -1367,6 +1403,29 @@ internal sealed class SettingsForm : Form
             using var p = Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
         };
         Controls.Add(btn);
+        return btn;
+    }
+
+    /// <summary>
+    /// Fixed-size row button — twin of <see cref="AddLinkButton"/> minus the link
+    /// click handler. Used for Update / Help / Check Config / Check Now / Browse
+    /// / Open. Caller supplies design-px width; AutoScaleMode handles DPI scaling.
+    /// Callers chain Location off the prior sibling's Right post-Add.
+    /// </summary>
+    private Button AddSizedButton(string text, int w)
+    {
+        var btn = new Button
+        {
+            Text = text,
+            Font = _btnFont,
+            Size = new Size(w, 26),
+            FlatStyle = FlatStyle.Flat,
+            ForeColor = FgColor,
+            BackColor = BgColor,
+            AccessibleName = text,
+        };
+        Controls.Add(btn);
+        return btn;
     }
 
     private static bool IsSyncthingRunning()

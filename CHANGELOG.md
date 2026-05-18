@@ -4,6 +4,34 @@
 
 All notable changes to SyncthingPause (formerly SyncthingTray, renamed at v3.0.0) are documented here.
 
+## v3.2.2 — 2026-05-18
+
+### Fix: Settings dialog clipping on 125%+ DPI displays
+
+Reported on a 125% display-scale laptop (Suzy's screen): the **Web UI → Open** button rendered as **"Ope"**; the **GitHub / Update / Syncthing / Help / Check Config** row got smushed against the form's bottom edge with descenders on `g` and `p` truncated; **"Syncthing"** showed up as **"Syncthi"**; **"Check Config"** lost the trailing `ig`; the **Windows startup delay** `NumericUpDown` appeared visually underneath the trailing word "delay" of its own label rather than to the right of it. Root cause was a mix of (a) button widths that fit the text at 100% scale with no margin, so DPI auto-scaling at 125%+ didn't leave enough chrome for the slightly-wider glyph rendering at higher DPI, and (b) mixed-DPI math in several spots — e.g. `Width = 200` overwriting an already-autoscaled checkbox width, or `_cbRelay.Bottom + 4` mixing physical-px with design-px. v3.2.2 hand-tunes button widths with a 24-32 design-px chrome margin around the measured text (uniform visual rhythm at 100%, comfortable headroom at 125-200%) and converts every post-Add design-literal override via `LogicalToDeviceUnits` so design-px and device-px never get mixed in the same expression.
+
+### Tried first, then reverted: AutoSize
+
+The first v3.2.2 draft used `AutoSize = true, AutoSizeMode = GrowAndShrink, Padding = new Padding(8, 4, 8, 4)` to let each button grow to fit its text at any DPI. In practice this produced visibly oversized buttons at 100% scale — Button.AutoSize stacks its measured-text width with the custom Padding *and* with the internal chrome margin Button adds for click-target ergonomics. Result: the `...` browse button rendered as a ~64×40 square, "Open" landed below the row baseline because its AutoSize height pushed it past the textbox row, the reveal-eye glyph was huge, and "Check Now" extended past the section divider. Reverted in favor of hand-tuned widths (and the rest of the DPI-math fixes), kept the position-chaining pattern off the prior sibling's autoscaled `Right` edge with `LogicalToDeviceUnits` gaps.
+
+### What's underneath
+
+- **`SettingsForm.cs · AddLinkButton`** — was `void`, now returns `Button` so callers in `BuildButtonRow` can chain Location off the autoscaled `Right`. Width is now a required parameter (it was implicit in the old fixed-size signature too).
+- **`SettingsForm.cs · AddSizedButton`** — new helper for non-link buttons (Update, Help, Check Config, Check Now, Browse `...`, Open). Same fixed-Size pattern as `AddLinkButton` minus the link click handler. Caller supplies design-px width.
+- **`SettingsForm.cs · BuildButtonRow`** — top row widths hand-tuned: GitHub 68→72, Update 58→62, Syncthing 68→**82** (was clipping to "Syncthi" at 125%), Help 58→52, Check Config 100→98 (with the chrome margin redistributed; the prior 100 design-px left only ~22 px of chrome inside the button, not enough to absorb DPI-scale glyph widening). Positions chain off the prior button's autoscaled `Right + LogicalToDeviceUnits(5)`. Bottom row (Save / Apply / Cancel) kept at fixed `Size(114, 30)` — 6-char "Cancel" at 9pt Segoe UI fits comfortably even at 200% DPI and the trio's symmetry depends on uniform width.
+- **`SettingsForm.cs · BuildPathsSection`** — Browse `...` width 50→**32** (three dots only need ~24 chrome; the prior 50 looked disproportionately wide), Open width 50→**54** (was clipping to "Ope" at 125%). Anchored off `_edSyncExe.Right` / `_edWebUI.Right` with a 4-design-px gap via `LogicalToDeviceUnits`.
+- **`SettingsForm.cs · BuildApiSection`** — reveal-eye width 52→**40** (single Segoe MDL2 glyph doesn't need 52 px; tighter button looks more icon-like). Anchored off `_edApiKey.Right`.
+- **`SettingsForm.cs · BuildUpdatesSection`** — Check Now width 90→**92** (small bump for chrome margin at 125%). Anchored off `_cbAutoUpdates.Right + LogicalToDeviceUnits(10)`.
+- **`SettingsForm.cs · BuildGeneralSection`** — `_nudDelay` now positioned off `lblDelay.Right + LogicalToDeviceUnits(8)` instead of a fixed `x=160`. The "seconds" label trails off `_nudDelay.Right + LogicalToDeviceUnits(6)`. At 125% DPI the label "Windows startup delay:" measured ~169 physical-px starting at x=20 — under the previous fixed-x=200 NUD position by ~11 px, so the label's "delay" word was visually overlapping the NUD's spinner band.
+- **`SettingsForm.cs · BuildDiscoverySection`** — `_cbGlobal.Width = 200;` and `_cbLocal.Width = 200;` raw-literal overrides (each one assigning a design-px value to an already-autoscaled control, leaving the width at 200 physical instead of the intended 250 at 125% DPI) now wrapped in `LogicalToDeviceUnits(200)`. Same fix for `_cbAutoUpdates.Width = 220` in `BuildUpdatesSection`.
+- **`SettingsForm.cs · OnDiscoveryRetryTick`** — warn label position fixed: was `AddLabel(..., 36, _cbRelay.Bottom + 4, ...)` which mixes `_cbRelay.Bottom` (physical-px) with the 36 x-literal and `+ 4` (design-px), then double-scales the y because AddLabel's `(x, y)` args autoscale on Controls.Add. Now passes `(0, 0)` placeholders to AddLabel and reassigns `Location` to `(LogicalToDeviceUnits(36), _cbRelay.Bottom + LogicalToDeviceUnits(4))` post-Add.
+- **`SettingsForm.cs · ctor`** — bottom padding bumped `y += 40` → `y += 48`. At 125% the previous 40 design-px (50 physical) was close enough to the bottom-row buttons that descenders on `g` and `p` rendered against the form's chrome.
+- **`SyncthingPause.csproj`** — 3.2.1 → 3.2.2.
+
+### Verifier coverage
+
+Build clean (0 warnings, 0 errors). 92/92 tests pass against the pre-revert DLL — the AutoSize→hand-tuned-widths revert touches only helper signatures and width-literal values, no logic that the existing unit tests cover. Visual smoke pending against the running tray on Asus 100% scale and Suzy's 125% scale.
+
 ## v3.2.1 — 2026-05-18
 
 ### Fix: "Check Now" upgrade probe no longer freezes Settings
