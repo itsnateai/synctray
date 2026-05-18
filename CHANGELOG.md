@@ -4,6 +4,28 @@
 
 All notable changes to SyncthingPause (formerly SyncthingTray, renamed at v3.0.0) are documented here.
 
+## v3.2.7 — 2026-05-18
+
+### Fix: revert v3.2.2 .Width LogicalToDeviceUnits wraps that overlapped Theme column at 125 %
+
+Reported by Nate after v3.2.6 sync to Suzy: the Theme column in the Discovery section showed "me" instead of "Theme:" and "ark" (with no radio dot) instead of "Dark" — clipped on the LEFT side. The Light radio button was fully visible to the right of where Dark should have been. Root cause was a misdiagnosis I introduced in v3.2.2: the verifier flagged `_cbGlobal.Width = 200` as "design-px literal overwriting an already-autoscaled checkbox" and I wrapped it in `LogicalToDeviceUnits(200)` to "convert to physical-px." Both the verifier and I had the wrong mental model — AutoScale doesn't fire on `Controls.Add`, it fires at Show (`OnHandleCreated`). So a post-Add assignment in the ctor is STILL design-px, and AutoScale handles the scaling at Show.
+
+Under PerMonitorV2 (which the csproj enables), `Control.DeviceDpi` pre-handle returns the process's primary monitor DPI — **120 on Suzy at 125 %, NOT 96**. So v3.2.2's `LogicalToDeviceUnits(200)` returned 250 pre-Show; AutoScale at Show then multiplied by 1.25 → **312.5 physical**. `_cbGlobal` at `x=20 physical` ended at 332.5 physical, overlapping the Theme column at `x=300 physical`. The checkbox's opaque `BackColor` painted over the "The" of "Theme:" and the "D" + radio dot of "Dark". The Light radio at `x=380` was past the overlap zone and stayed fully visible.
+
+### What's underneath
+
+- **`SettingsForm.cs · BuildDiscoverySection`** — reverted `_cbGlobal.Width = LogicalToDeviceUnits(200)` → `_cbGlobal.Width = 200`. Same revert for `_cbLocal.Width`.
+- **`SettingsForm.cs · BuildUpdatesSection`** — reverted `_cbAutoUpdates.Width = LogicalToDeviceUnits(220)` → `_cbAutoUpdates.Width = 220`.
+- **`SyncthingPause.csproj`** — 3.2.6 → 3.2.7.
+
+### Why this matters
+
+This is the second time in this session a verifier convergence (Sonnet + Opus agreeing) turned out to be wrong. Round 1's "post-Add design-literal overwrites autoscaled Width" finding was load-bearing only IF AutoScale had already fired — which it hasn't, at ctor time, on a Form whose handle isn't created yet. Both verifier models applied the same flawed assumption. Lesson: agent convergence is signal that something is **interesting**, not signal that the finding is **correct**. Empirical test (or in this case: deploying to Suzy's 125 % screen and observing the broken layout) is the only ground truth.
+
+### Verifier coverage
+
+Build clean (0 warnings, 0 errors). 92/92 tests pass. Self-contained single-file deployed to `C:\Users\nate\proggy\Tools\syncthingpause\SyncthingPause.exe`, propagated to Suzy via the `ToSuzy` Syncthing share, and published as a GitHub Release.
+
 ## v3.2.6 — 2026-05-18
 
 ### Fix: Settings dialog Update + Check Config widths still clipped at 125%

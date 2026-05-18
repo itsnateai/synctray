@@ -357,16 +357,22 @@ internal sealed class SettingsForm : Form
         // lines tall on the right side of the section.
         int themeLabelY = y;
         _cbGlobal = AddCheckBox("Global Discovery", 16, y, false);
-        // v3.2.2: AddCheckBox sets Width=320 design-px, autoscaled on Controls.Add.
-        // Assigning a raw literal here AFTER Add overwrites the scaled width with
-        // a design-px value at runtime (200 physical-px at 125% DPI instead of the
-        // intended 250). Convert via LogicalToDeviceUnits so the override stays
-        // proportional. Same fix at line ~330 (_cbLocal) and ~532 (_cbAutoUpdates).
-        _cbGlobal.Width = LogicalToDeviceUnits(200);
+        // v3.2.7: reverted v3.2.2's LogicalToDeviceUnits wrap. The v3.2.2 mental
+        // model was wrong: AutoScale doesn't fire on Controls.Add — it fires at
+        // Show (OnHandleCreated). So this post-Add assignment in the ctor is
+        // STILL design-px, and AutoScale handles the scaling correctly at Show.
+        // Under PerMonitorV2, Control.DeviceDpi pre-handle returns the process's
+        // primary monitor DPI (120 on Suzy at 125 %), NOT 96 — so v3.2.2's
+        // LogicalToDeviceUnits(200) returned 250 pre-Show, then AutoScale at
+        // Show multiplied by 1.25 → 312.5 physical. _cbGlobal at x=20 physical
+        // ended at 332 physical, overlapping the Theme: column at x=300, and
+        // its opaque BackColor painted over the "The" of "Theme:" and the "D"
+        // + radio dot of "Dark". Plain literal lets AutoScale do its job.
+        _cbGlobal.Width = 200;
         y += 24;
         int themeRadioY = y;
         _cbLocal = AddCheckBox("Local Discovery", 16, y, false);
-        _cbLocal.Width = LogicalToDeviceUnits(200);
+        _cbLocal.Width = 200;
         y += 24;
         _cbRelay = AddCheckBox("NAT Traversal (Relaying)", 16, y, false);
         y += 24;
@@ -578,9 +584,10 @@ internal sealed class SettingsForm : Form
         AddSectionHeader("Updates", 16, ref y, sw);
 
         _cbAutoUpdates = AddCheckBox("Check for Syncthing updates (daily)", 16, y, _config.AutoCheckUpdates);
-        // v3.2.2: see _cbGlobal.Width comment — design-px literal must be converted
-        // to physical-px via LogicalToDeviceUnits when overriding an autoscaled Width.
-        _cbAutoUpdates.Width = LogicalToDeviceUnits(220);
+        // v3.2.7: reverted v3.2.2's LogicalToDeviceUnits wrap — see _cbGlobal
+        // comment in BuildDiscoverySection. Raw design literal is correct;
+        // AutoScale at Show handles the DPI scaling.
+        _cbAutoUpdates.Width = 220;
         // v3.2.2: width=92 (was 90) — "Check Now" is ~56 design-px; 92 gives
         // 36px chrome margin (18 each side). Anchored off the checkbox's
         // autoscaled Right edge using LogicalToDeviceUnits gap.
